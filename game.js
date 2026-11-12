@@ -33,7 +33,7 @@ const DAZZLE_TIME = 1.0, DAZZLE_IMMUNE = 2.5;
 const POST_R = 4;
 
 // --- goalkeeper zone (goal area) ---
-const GA_DEPTH = 70, GA_HALF = 95;      // size of the goal area in front of each goal
+const GA_DEPTH = 91, GA_HALF = 95;      // size of the goal area in front of each goal
 const CATCH_SPEED = 480;                // slower shots than this are caught
 const PARRY_SPEED = 720;                // shots up to this speed can be parried (60% chance)
 const KEEP_REACH = 46, HOLD_T = 0.9;    // reach of the hands; how long the keeper holds the ball
@@ -224,7 +224,8 @@ function humanInput(dt) {
 
 // ---------- Aiming ----------
 const canKickNow = () => phase === 'play' &&
-  (owner === me || ball.held === me || (dist2(me, ball) < KICK_R * 1.3 && ball.z < 40));
+  (owner === me || ball.held === me ||
+   (owner === null && !ball.held && dist2(me, ball) < KICK_R * 1.3 && ball.z < 40));
 function startAim() {
   if (busy(me) || !canKickNow()) return;
   aim.active = true; aim.t0 = nowS();
@@ -379,7 +380,12 @@ function movePlayer(p, other, dt) {
   if (p.slide > 0) {
     p.slide -= dt;
     p.vx = p.fx * p.slideV; p.vd = p.fd * p.slideV;
-    if (dist2(p, ball) < 32 && ball.z < 20) {
+    if (inKeeperZone(p) && !ball.held &&
+        ((dist2(p, ball) < 32 && ball.z < 40) || (owner === other && dist2(other, p) < PR * 2 + 6))) {
+      ball.held = p; ball.holdT = HOLD_T; owner = p; p.slide = 0;
+      if (dist2(other, p) < PR * 2 + 10) { other.stun = 0.6; other.ng = 0.8; }
+      popup('Caught!', p.x, p.d, p.ai ? '#7fb2ff' : '#ff7b84'); beep(300, 0.1, 'triangle', 0.2);
+    } else if (dist2(p, ball) < 32 && ball.z < 20) {
       ball.vx = p.fx * 300 + (Math.random() - 0.5) * 120;
       ball.vd = p.fd * 300 + (Math.random() - 0.5) * 120;
       ball.vz = 60; p.ng = 0.25; owner = null;
@@ -681,7 +687,7 @@ function drawPlayer(p) {
   const swing = p.spd > 20 ? Math.sin(p.run) * Math.min(10, p.spd / 25) : 0;
   const tiredLean = (1 - p.stam) * 4 * dir;
   ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s; ctx.lineCap = 'round';
-  if (sprinting(p) && p.spd > 30) drawWheel(s, p.run * 3 * dir);
+  if (sprinting(p) && p.spd > 30) drawWheel(s, p.run * 3, dir);
   else {
     ctx.beginPath(); ctx.moveTo(-3 * s, -20 * s); ctx.lineTo((-3 + swing) * s, 0);
     ctx.moveTo(3 * s, -20 * s); ctx.lineTo((3 - swing) * s, 0); ctx.stroke();
@@ -712,20 +718,28 @@ function drawPlayer(p) {
   }
 }
 
-// Cartoon "wheel legs" while sprinting
-function drawWheel(s, rot) {
-  const cy = -11 * s, r = 11 * s;
-  ctx.lineWidth = 3 * s;
-  ctx.beginPath(); ctx.arc(0, cy, r, 0, Math.PI * 2); ctx.stroke();
-  for (let i = 0; i < 4; i++) {
-    const a = rot + i * Math.PI / 2;
-    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(Math.cos(a) * r, cy + Math.sin(a) * r); ctx.stroke();
+// Cartoon blur-loop legs while sprinting (classic "legs become a whirl" effect)
+function drawWheel(s, rot, dir) {
+  const cy = -10 * s;
+  ctx.save(); ctx.lineCap = 'round';
+  for (let i = 0; i < 6; i++) {                                   // smeared leg loops
+    const a = rot + i * 1.05;
+    ctx.strokeStyle = `rgba(30,30,30,${0.42 - i * 0.05})`; ctx.lineWidth = (4.5 - i * 0.4) * s;
+    ctx.beginPath();
+    ctx.ellipse(Math.cos(a) * 3 * s, cy + Math.sin(a) * 2 * s, (13 + i) * s, (9 + i * 0.6) * s, -dir * 0.35, 0, Math.PI * 2);
+    ctx.stroke();
   }
-  ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2 * s;            // speed whooshes
+  ctx.strokeStyle = 'rgba(210,40,40,.55)'; ctx.lineWidth = 3.5 * s;  // shoe smears
+  for (const off of [0, Math.PI]) {
+    const a = (rot % (Math.PI * 2)) + off;
+    ctx.beginPath(); ctx.ellipse(0, cy + 2 * s, 15 * s, 10 * s, -dir * 0.35, a, a + 1.3); ctx.stroke();
+  }
+  ctx.fillStyle = 'rgba(230,220,200,.45)';                          // dust puffs behind
   for (let i = 0; i < 3; i++) {
-    const a = rot * 1.3 + i * 2.1;
-    ctx.beginPath(); ctx.arc(0, cy, r + 4 * s, a, a + 1.1); ctx.stroke();
+    const t = (rot * 0.5 + i / 3) % 1;
+    ctx.beginPath(); ctx.arc(-dir * (18 + t * 26) * s, -(2 + t * 6) * s, (3 + t * 5) * s, 0, Math.PI * 2); ctx.fill();
   }
+  ctx.restore();
   ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s;
 }
 
@@ -744,9 +758,9 @@ function drawArms(p, s, dir, swing) {
   const mode = armMode(p), o = p === me ? cpu : me;
   let hands;
   if (mode === 'hold') hands = [[dir * 12, -34], [dir * 12, -28]];
-  else if (mode === 'push') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 26, -40], [-sg * 4, -24]]; }
-  else if (mode === 'spread') hands = [[-24, -46], [24, -46]];
-  else if (mode === 'keeper') hands = [[-14, -64], [14, -64]];
+  else if (mode === 'push') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 19, -21], [-sg * 4, -24]]; }
+  else if (mode === 'spread') hands = [[-19, -21], [19, -21]];
+  else if (mode === 'keeper') hands = [[-25, -40], [25, -40]];
   else hands = [[swing * 0.8, -24], [-swing * 0.8, -24]];
   for (const [hx, hy] of hands) {
     ctx.strokeStyle = p.col; ctx.lineWidth = 5 * s;
