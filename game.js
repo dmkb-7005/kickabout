@@ -17,7 +17,20 @@ const SPRINT_MULT = 1.5, SPRINT_TIME = 3, SPRINT_CD = 10;
 
 // --- shooting accuracy: spread grows with distance to goal ---
 const SHOT_SPREAD_NEAR = 0.03;          // radians of error right in front of goal
-const SHOT_SPREAD_FAR = 0.34;           // extra radians at a full pitch length away
+const SHOT_SPREAD_FAR = 0.22;           // extra radians at a full pitch length away
+
+// --- aiming (hold KICK) ---
+const SLOWMO = 0.25;                    // game speed while aiming
+const AIM_SHAKE_MAX = 0.75;             // radians of aim-line shake at the worst point (~43°)
+const AIM_SHAKE_TIME = 8;               // seconds of holding until the shake is at its maximum
+
+// --- feints ---
+const FEINT_WINDOW = 1.1;               // the 3 joystick flicks must happen within this many seconds
+const FEINT_CD = 2;                     // seconds before another feint can be done
+const DAZZLE_TIME = 1.0, DAZZLE_IMMUNE = 2.5;
+
+// --- goal frame ---
+const POST_R = 4;
 
 // --- movement / fatigue tuning ---
 const HUMAN_TOP = 280, AI_TOP = 255;   // top speed when fresh
@@ -72,10 +85,17 @@ let me, cpu, ball, owner = null, score = [0, 0];
 let phase = 'menu', phaseT = 0, msg = '', kickCharge = -1, nextHumanKicks = true;
 let kickoffLock = false, kickoffT = 0, kicker = null;
 const sprint = { active: false, t: 0, cd: 0 };
+const aim = { active: false, t0: 0, ang: 0, power: 0.5, lvx: 0, lvd: 0 };
+const feint = { tokens: [], cd: 0 };
+const popups = [];
+const nowS = () => performance.now() / 1000;
+// Rubber-banding: >1 makes the CPU stronger (you're leading), <1 weaker (CPU is leading)
+const aiSkill = () => clamp(1 + 0.07 * (score[0] - score[1]), 0.86, 1.14);
+function popup(txt, x, d, col = '#fff') { popups.push({ txt, x, d, t: 1.3, col }); }
 
 function mkPlayer(x, col, ai, stam = 1) {
   return { x, d: FD / 2, vx: 0, vd: 0, fx: ai ? -1 : 1, fd: 0, hx: ai ? -1 : 1, want: 0,
-    col, ai, stam, stun: 0, slide: 0, recover: 0, tcd: 0, ng: 0, run: 0, spd: 0, aim: 0 };
+    col, ai, stam, dazzle: 0, dazImm: 0, stun: 0, slide: 0, recover: 0, tcd: 0, ng: 0, run: 0, spd: 0, aim: 0 };
 }
 function setupKickoff(humanKicks) {
   const sm = me ? Math.min(1, me.stam + 0.3) : 1, sc = cpu ? Math.min(1, cpu.stam + 0.3) : 1;
@@ -83,7 +103,7 @@ function setupKickoff(humanKicks) {
   me = mkPlayer(humanKicks ? c - PR - BR - 2 : c - 140, '#e63946', false, sm);
   cpu = mkPlayer(humanKicks ? c + 140 : c + PR + BR + 2, '#1d6fe0', true, sc);
   ball = { x: c, d: FD / 2, z: 0, vx: 0, vd: 0, vz: 0 };
-  owner = null; kickCharge = -1;
+  owner = null; aim.active = false; feint.tokens.length = 0;
   kicker = humanKicks ? me : cpu; kickoffLock = true; kickoffT = 0;
   sprint.active = false;
   phase = 'ready'; phaseT = 1.4;
@@ -110,7 +130,7 @@ cv.addEventListener('pointerdown', e => {
   e.preventDefault();
   if (!playing()) return;
   try { cv.setPointerCapture(e.pointerId); } catch (_) {}
-  if (hit(btnK, e)) { ptr.kick = e.pointerId; kickCharge = 0; }
+  if (hit(btnK, e)) { ptr.kick = e.pointerId; startAim(); }
   else if (hit(btnT, e)) { if (phase === 'play') doTackle(me); }
   else if (hit(btnS, e)) { ptr.sprint = e.pointerId; startSprint(); }
   else if (ptr.move === null && Math.hypot(e.clientX - joy.x, e.clientY - joy.y) < joy.r * 1.7) {
@@ -121,7 +141,7 @@ cv.addEventListener('pointermove', e => { if (e.pointerId === ptr.move) { ptr.mx
 function release(e) {
   if (e.pointerId === ptr.move) ptr.move = null;
   if (e.pointerId === ptr.sprint) { ptr.sprint = null; endSprint(); }
-  if (e.pointerId === ptr.kick) { if (phase === 'play') doKick(me, kickCharge); kickCharge = -1; ptr.kick = null; }
+  if (e.pointerId === ptr.kick) { releaseAim(); ptr.kick = null; }
 }
 cv.addEventListener('pointerup', release);
 cv.addEventListener('pointercancel', release);
@@ -146,7 +166,7 @@ function endSprint() {
 const sprinting = p => p === me && sprint.active;
 
 // ---------- Movement physics ----------
-const topSpeed = p => (p.ai ? AI_TOP : HUMAN_TOP);
+const topSpeed = p => (p.ai ? AI_TOP * aiSkill() : HUMAN_TOP);
 const maxSpeed = p => topSpeed(p) * (0.5 + 0.5 * p.stam) * (owner === p ? 0.9 : 1) * (sprinting(p) ? SPRINT_MULT : 1);
 
 // Accelerate towards a target velocity with limited acceleration -> inertia.
@@ -163,7 +183,18 @@ function humanInput(dt) {
   const p = me;
   p.want = 0;
   if (busy(p)) return;
+  if (aim.active) {
+    // While aiming: keep running the way you were going; the joystick now steers the aim line.
+    // Direction = joystick direction, power = how far the joystick is pushed.
+    if (ptr.move !== null) {
+      const dx = ptr.mx - joy.x, dd = ptr.my - joy.y, l = Math.hypot(dx, dd);
+      if (l > 10) { aim.ang = Math.atan2(dd, dx); aim.power = clamp((l - 10) / (joy.r - 10), 0.15, 1); }
+    }
+    accelTo(p, aim.lvx, aim.lvd, dt);
+    return;
+  }
   if (ptr.move !== null) {
+    recordFlick((ptr.mx - joy.x) / joy.r, (ptr.my - joy.y) / joy.r);
     // virtual joystick: direction = finger relative to circle centre, speed = distance from centre
     const dx = ptr.mx - joy.x, dd = ptr.my - joy.y, dist = Math.hypot(dx, dd);
     if (dist > 10) {
@@ -177,9 +208,61 @@ function humanInput(dt) {
   accelTo(p, 0, 0, dt);
 }
 
+// ---------- Aiming ----------
+function startAim() {
+  if (phase !== 'play' || busy(me)) return;
+  if (!(owner === me || (dist2(me, ball) < KICK_R * 1.3 && ball.z < 40))) return;
+  aim.active = true; aim.t0 = nowS();
+  aim.lvx = me.vx; aim.lvd = me.vd;
+  aim.ang = Math.atan2(me.fd, me.fx); aim.power = 0.5;
+}
+const aimShakeFrac = () => Math.min(1, (nowS() - aim.t0) / AIM_SHAKE_TIME);
+function aimAngle() {
+  const t = nowS() - aim.t0, amp = AIM_SHAKE_MAX * Math.pow(aimShakeFrac(), 1.6);
+  return aim.ang + amp * (Math.sin(t * 7.3) * 0.6 + Math.sin(t * 12.9 + 1.3) * 0.4);
+}
+function releaseAim() {
+  if (!aim.active) return;
+  const a = aimAngle();
+  aim.active = false;
+  if (phase !== 'play') return;
+  me.fx = Math.cos(a); me.fd = Math.sin(a);
+  doKick(me, aim.power);
+}
+
+// ---------- Feints (joystick flicks) ----------
+// up-down-up (or down-up-down) next to the CPU = dazzle it for a second
+// right-left-right with the CPU in front = chip the ball over it
+function recordFlick(nx, ny) {
+  if (Math.hypot(nx, ny) < 0.45) return;
+  let k;
+  if (Math.abs(ny) > Math.abs(nx) * 1.2) k = ny < 0 ? 'U' : 'D';
+  else if (Math.abs(nx) > Math.abs(ny) * 1.2) k = nx > 0 ? 'R' : 'L';
+  else return;
+  const T = feint.tokens, t = nowS();
+  if (T.length && T[T.length - 1].k === k) return;
+  T.push({ k, t }); while (T.length > 3) T.shift();
+  if (T.length === 3 && t - T[0].t < FEINT_WINDOW) tryFeint(T.map(o => o.k).join(''));
+}
+function tryFeint(seq) {
+  if (feint.cd > 0 || owner !== me || phase !== 'play') return;
+  const o = cpu;
+  if ((seq === 'UDU' || seq === 'DUD') && dist2(me, o) < 170 && o.dazzle <= 0 && o.dazImm <= 0 && o.stun <= 0) {
+    o.dazzle = DAZZLE_TIME * (2 - aiSkill()); o.vx *= 0.3; o.vd *= 0.3;
+    feint.cd = FEINT_CD; feint.tokens.length = 0;
+    popup('Dazzled!', o.x, o.d, '#ffd23f'); beep(880, 0.08, 'triangle', 0.15); beep(1320, 0.12, 'triangle', 0.1);
+  } else if (seq === 'RLR' && o.x > me.x && o.x - me.x < 240 && Math.abs(o.d - me.d) < 100) {
+    ball.vx = 300; ball.vd = me.vd * 0.3; ball.vz = 420; ball.z = Math.max(ball.z, 1);
+    me.ng = 0.2; owner = null;
+    feint.cd = FEINT_CD; feint.tokens.length = 0;
+    popup('Over the top!', me.x, me.d, '#7ee081'); beep(500, 0.15, 'triangle', 0.25);
+  }
+}
+
 // ---------- AI ----------
 function aiThink(p, dt) {
   if (busy(p)) return;
+  if (p.dazzle > 0) { accelTo(p, 0, 0, dt * 0.7); return; }
   const opp = me, dB = dist2(p, ball);
   let tx, td, frac;
   if (owner === p) {
@@ -210,7 +293,7 @@ function aiThink(p, dt) {
       const off = Math.hypot(tx - p.x, td - p.d);
       frac = dO > 300 ? 0.6 : dO > 150 ? 0.42 : 0.32;
       if (off > 70) frac = Math.max(frac, 0.8);
-      if (dO < 46 && p.tcd <= 0 && Math.random() < dt * 1.3) {
+      if (dO < 46 && p.tcd <= 0 && Math.random() < dt * 1.3 * aiSkill()) {
         const l2 = dB || 1; p.fx = (ball.x - p.x) / l2; p.fd = (ball.d - p.d) / l2;
         doTackle(p); return;
       }
@@ -232,21 +315,21 @@ function aiThink(p, dt) {
 }
 
 // ---------- Actions ----------
-function doKick(p, charge) {
-  if (p.stun > 0 || p.slide > 0 || charge < 0) return;
+function doKick(p, power) {
+  if (p.stun > 0 || p.slide > 0) return;
   if (dist2(p, ball) > KICK_R || ball.z > 40) return;
-  const c = Math.min(1, charge / 0.7);
-  const pw = (360 + 540 * c) * (0.75 + 0.25 * p.stam) * (0.92 + Math.random() * 0.16);
+  const c = clamp(power, 0, 1);
+  const pw = (300 + 600 * c) * (0.75 + 0.25 * p.stam) * (0.92 + Math.random() * 0.16);
   // accuracy: the further from the goal you're attacking, the bigger the random error
   const gx = p.ai ? 0 : FW, dGoal = Math.hypot(gx - p.x, FD / 2 - p.d);
   const spread = (SHOT_SPREAD_NEAR + SHOT_SPREAD_FAR * Math.pow(dGoal / FW, 1.3))
-               * (0.8 + 0.5 * c) * (1 + 0.6 * (1 - p.stam)) * (sprinting(p) ? 1.3 : 1);
+               * (0.8 + 0.5 * c) * (1 + 0.6 * (1 - p.stam)) * (sprinting(p) ? 1.3 : 1) / (p.ai ? aiSkill() : 1);
   const err = (Math.random() + Math.random() + Math.random() - 1.5) * 2 * spread;
   const cs = Math.cos(err), sn = Math.sin(err);
   const kx = p.fx * cs - p.fd * sn, kd = p.fx * sn + p.fd * cs;
   ball.vx = kx * pw + p.vx * 0.3;
   ball.vd = kd * pw + p.vd * 0.3;
-  ball.vz = 90 + 290 * c;
+  ball.vz = 60 + 300 * c * c;
   p.ng = 0.3; owner = null;
   beep(180 + 200 * c, 0.1, 'triangle', 0.3);
 }
@@ -260,6 +343,8 @@ function doTackle(p) {
 }
 
 function movePlayer(p, other, dt) {
+  if (p.dazzle > 0) { p.dazzle -= dt; if (p.dazzle <= 0) p.dazImm = DAZZLE_IMMUNE; }
+  else p.dazImm = Math.max(0, p.dazImm - dt);
   p.stun = Math.max(0, p.stun - dt); p.tcd = Math.max(0, p.tcd - dt); p.ng = Math.max(0, p.ng - dt);
   if (p.recover > 0) { p.recover -= dt; accelTo(p, 0, 0, dt); }
   if (p.stun > 0) accelTo(p, 0, 0, dt * 0.6);
@@ -312,6 +397,36 @@ function dribble() {
 }
 
 function ballPhysics(dt, detectGoals) {
+  for (let i = 0; i < 3; i++) ballStep(dt / 3, detectGoals);
+}
+function clang(vn) {
+  if (Math.abs(vn) < 60) return;
+  beep(1250, 0.12, 'square', 0.1); beep(880, 0.25, 'triangle', 0.12);
+  if (Math.abs(vn) > 200) popup('Clang!', ball.x, ball.d, '#ddd');
+}
+function goalFrame() {
+  const m = BR + POST_R;
+  for (const gx of [0, FW]) {
+    for (const pd of [FD / 2 - GOAL_HALF, FD / 2 + GOAL_HALF]) {          // posts
+      if (ball.z + BR > GOAL_H) continue;
+      const dx = ball.x - gx, dd = ball.d - pd, l = Math.hypot(dx, dd);
+      if (l < m && l > 0) {
+        const nx = dx / l, nd = dd / l, vn = ball.vx * nx + ball.vd * nd;
+        if (vn < 0) { ball.vx -= 1.7 * vn * nx; ball.vd -= 1.7 * vn * nd; clang(vn); }
+        ball.x = gx + nx * m; ball.d = pd + nd * m;
+      }
+    }
+    if (Math.abs(ball.d - FD / 2) < GOAL_HALF) {                         // crossbar
+      const dx = ball.x - gx, dz = ball.z + BR - GOAL_H, l = Math.hypot(dx, dz);
+      if (l < m && l > 0) {
+        const nx = dx / l, nz = dz / l, vn = ball.vx * nx + ball.vz * nz;
+        if (vn < 0) { ball.vx -= 1.7 * vn * nx; ball.vz -= 1.7 * vn * nz; clang(vn); }
+        ball.x = gx + nx * m; ball.z = GOAL_H + nz * m - BR;
+      }
+    }
+  }
+}
+function ballStep(dt, detectGoals) {
   ball.x += ball.vx * dt; ball.d += ball.vd * dt; ball.z += ball.vz * dt;
   if (ball.z > 0 || ball.vz > 0) ball.vz -= GRAVITY * dt;
   if (ball.z < 0) { ball.z = 0; ball.vz = ball.vz < -120 ? -ball.vz * 0.5 : 0; }
@@ -319,7 +434,8 @@ function ballPhysics(dt, detectGoals) {
   ball.vx *= fr; ball.vd *= fr;
   if (ball.d < BR) { ball.d = BR; ball.vd = Math.abs(ball.vd) * 0.6; }
   if (ball.d > FD - BR) { ball.d = FD - BR; ball.vd = -Math.abs(ball.vd) * 0.6; }
-  const inMouth = Math.abs(ball.d - FD / 2) < GOAL_HALF - BR && ball.z < GOAL_H;
+  goalFrame();
+  const inMouth = Math.abs(ball.d - FD / 2) < GOAL_HALF && ball.z + BR < GOAL_H;
   const inGoal = ball.x < 0 || ball.x > FW;
   if (!inGoal) {
     if (ball.x < BR && !inMouth) { ball.x = BR; ball.vx = Math.abs(ball.vx) * 0.6; }
@@ -330,7 +446,7 @@ function ballPhysics(dt, detectGoals) {
     if (ball.x > FW + GOAL_DEPTH - BR) { ball.x = FW + GOAL_DEPTH - BR; ball.vx *= -0.15; }
     ball.z = Math.min(ball.z, GOAL_H * 0.8);
   }
-  if (detectGoals) {
+  if (detectGoals && phase === 'play') {
     if (ball.x < -BR) goal(1);
     else if (ball.x > FW + BR) goal(0);
   }
@@ -368,7 +484,8 @@ function update(dt) {
     phaseT -= dt;
     if (phaseT <= 0) { phase = 'play'; msg = ''; }
   } else if (phase === 'play') {
-    if (kickCharge >= 0) kickCharge += dt;
+    feint.cd = Math.max(0, feint.cd - dt);
+    if (aim.active && (me.stun > 0 || me.slide > 0 || (owner !== me && dist2(me, ball) > KICK_R * 2))) aim.active = false;
     humanInput(dt); aiThink(cpu, dt);
     movePlayer(me, cpu, dt); movePlayer(cpu, me, dt);
     separate(); enforceKickoff(dt); dribble(); ballPhysics(dt, true);
@@ -513,7 +630,11 @@ function drawPlayer(p) {
   ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(sx - bw / 2 - 1, by - 1, bw + 2, 6 * s + 2);
   ctx.fillStyle = p.stam > 0.5 ? '#5ad65a' : p.stam > 0.25 ? '#ffd23f' : '#ff5a4f';
   ctx.fillRect(sx - bw / 2, by, bw * p.stam, 6 * s);
-  if (p.stun > 0) {
+  if (p.dazzle > 0) {
+    ctx.font = `${20 * s}px system-ui`; ctx.textAlign = 'center';
+    const t = performance.now() / 90;
+    for (let i = 0; i < 3; i++) ctx.fillText('⭐', sx + Math.cos(t + i * 2.1) * 16 * s, by - 8 * s + Math.sin(t + i * 2.1) * 5 * s);
+  } else if (p.stun > 0) {
     ctx.font = `${16 * s}px system-ui`; ctx.textAlign = 'center';
     ctx.fillText('💫', sx + Math.sin(performance.now() / 120) * 8 * s, by - 10 * s);
   } else if (p.stam < 0.2) {
@@ -552,9 +673,9 @@ function drawButton(b, active, charge) {
   ctx.globalAlpha = active ? 0.95 : 0.6;
   ctx.fillStyle = b.col;
   ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill();
-  if (charge > 0) {
-    ctx.strokeStyle = '#fff'; ctx.lineWidth = 8;
-    ctx.beginPath(); ctx.arc(b.x, b.y, b.r + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * Math.min(1, charge / 0.7)); ctx.stroke();
+  if (charge > 0) {                                      // aim shakiness building up
+    ctx.strokeStyle = `rgb(255,${Math.round(230 - 190 * charge)},${Math.round(80 - 60 * charge)})`; ctx.lineWidth = 8;
+    ctx.beginPath(); ctx.arc(b.x, b.y, b.r + 8, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * charge); ctx.stroke();
   }
   ctx.globalAlpha = 1; ctx.fillStyle = '#222';
   ctx.font = `800 ${b.r * 0.36}px system-ui`; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
@@ -569,10 +690,13 @@ function render() {
   const items = [me, cpu, ball].sort((a, b) => a.d - b.d);
   for (const it of items) {
     if (it === ball) drawBall();
-    else { if (!it.ai) drawArrow(it); drawPlayer(it); }
+    else { if (!it.ai && !aim.active) drawArrow(it); drawPlayer(it); }
   }
+  drawAim();
+  drawPopups();
   drawGoal(0, true); drawGoal(1, true);
 
+  if (aim.active) { ctx.fillStyle = 'rgba(10,20,70,.16)'; ctx.fillRect(0, 0, W, H); }
   // HUD
   ctx.fillStyle = 'rgba(0,0,0,.45)';
   ctx.beginPath(); ctx.roundRect(W / 2 - 150, 10, 300, 52, 12); ctx.fill();
@@ -586,9 +710,34 @@ function render() {
     ctx.strokeText(msg, W / 2, H * 0.42); ctx.fillText(msg, W / 2, H * 0.42);
   }
   if (playing()) {
-    drawButton(btnK, ptr.kick !== null, kickCharge); drawButton(btnT, me.slide > 0, 0);
+    drawButton(btnK, aim.active, aim.active ? aimShakeFrac() : 0); drawButton(btnT, me.slide > 0, 0);
     drawSprintButton(); drawJoystick();
   }
+}
+
+function drawAim() {
+  if (!aim.active) return;
+  const a = aimAngle(), ax = Math.cos(a), ad = Math.sin(a), len = 80 + 320 * aim.power, k = aimShakeFrac();
+  const st = P(ball.x, ball.d), en = P(ball.x + ax * len, ball.d + ad * len);
+  const col = `rgba(255,${Math.round(255 - 200 * k)},${Math.round(255 - 220 * k)},0.85)`;
+  ctx.save();
+  ctx.setLineDash([12, 9]); ctx.lineWidth = 4; ctx.strokeStyle = col;
+  ctx.beginPath(); ctx.moveTo(st[0], st[1]); ctx.lineTo(en[0], en[1]); ctx.stroke();
+  ctx.setLineDash([]);
+  const r = 10 * scaleAt(ball.d + ad * len);
+  ctx.beginPath(); ctx.ellipse(en[0], en[1], r, r * 0.5, 0, 0, Math.PI * 2); ctx.stroke();
+  ctx.restore();
+}
+
+function drawPopups() {
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  for (const p of popups) {
+    const [sx, sy] = P(p.x, p.d), s = scaleAt(p.d), rise = (1.3 - p.t) * 40;
+    ctx.globalAlpha = Math.min(1, p.t / 0.4);
+    ctx.font = `900 ${22 * s}px system-ui`; ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(0,0,0,.6)';
+    ctx.strokeText(p.txt, sx, sy - 95 * s - rise); ctx.fillStyle = p.col; ctx.fillText(p.txt, sx, sy - 95 * s - rise);
+  }
+  ctx.globalAlpha = 1;
 }
 
 function drawJoystick() {
@@ -626,7 +775,9 @@ function drawSprintButton() {
 let last = performance.now();
 function frame(t) {
   const dt = Math.min(1 / 30, (t - last) / 1000); last = t;
-  update(dt); render();
+  update(dt * (aim.active ? SLOWMO : 1));
+  for (let i = popups.length - 1; i >= 0; i--) if ((popups[i].t -= dt) <= 0) popups.splice(i, 1);
+  render();
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
