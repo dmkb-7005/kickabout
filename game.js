@@ -1,14 +1,29 @@
 'use strict';
-// ---------- Constants (world units; d = depth across the pitch, z = height) ----------
-const FW = 1000, FD = 600, K = 0.35;          // pitch length, depth, depth squash for side view
-const GOAL_HALF = 75, GOAL_H = 95, GOAL_DEPTH = 35;
-const PR = 16, BR = 9;                          // player / ball radius
-const HUMAN_MAX = 270, AI_MAX = 200;            // run speeds
-const DRIBBLE_R = 28, KICK_R = 44, FULL_SPEED_DIST = 220;
+// =====================================================================
+//  Kick-About – prototype v2
+//  World units: x = along the pitch, d = depth (0 = far touchline,
+//  FD = near touchline), z = height. Rendered with a perspective camera
+//  placed above/behind the near touchline that scrolls with the play.
+// =====================================================================
+const FW = 1100, FD = 400;
+const GOAL_HALF = 75, GOAL_H = 95, GOAL_DEPTH = 40;
+const PR = 16, BR = 9;
+const DRIBBLE_R = 28, KICK_R = 44, FULL_SPEED_DIST = 200;
 const GRAVITY = 900, MATCH_GOALS = 5;
 
+// --- movement / fatigue tuning ---
+const HUMAN_TOP = 280, AI_TOP = 255;   // top speed when fresh
+const ACCEL = 380, BRAKE = 620;        // units/s² (speeding up vs. slowing/turning)
+const DRAIN = 0.17;                    // stamina lost per second at full sprint
+const RECOVER = 0.13;                  // stamina regained per second when walking/standing
+const WALK_FRAC = 0.45;                // below this fraction of top speed you don't get tired
+
+// --- camera ---
+const D0 = 520;        // distance from camera to near touchline
+const VIEW_W = 640;    // roughly how much pitch length is visible at mid-depth
+
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
-let W, H, S, OX, OY;
+let W, H, F, A, HY, camX = FW / 2;
 const btnK = { r: 70, label: 'KICK', col: '#ffd23f' };
 const btnT = { r: 52, label: 'TACKLE', col: '#ff8c42' };
 
@@ -17,32 +32,46 @@ function resize() {
   W = innerWidth; H = innerHeight;
   cv.width = W * dpr; cv.height = H * dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  S = Math.min((W - 100) / (FW + 2 * GOAL_DEPTH), (H - 90) / (FD * K + GOAL_H));
-  OX = (W - FW * S) / 2;
-  OY = 70 + GOAL_H * S + ((H - 90) - (FD * K + GOAL_H) * S) / 2;
+  const nearY = H + 10, farY = Math.max(150, H * 0.24);
+  A = (nearY - farY) / (1 / D0 - 1 / (D0 + FD));
+  HY = nearY - A / D0;
+  F = (D0 + FD / 2) * W / VIEW_W;
   btnK.x = 40 + btnK.r; btnK.y = H - 30 - btnK.r;
   btnT.x = btnK.x + btnK.r + 30 + btnT.r; btnT.y = H - 22 - btnT.r;
 }
 addEventListener('resize', resize); resize();
 
-const toS = (x, d, z = 0) => [OX + x * S, OY + (d * K - z) * S];
+const camDist = d => D0 + FD - d;
+const scaleAt = d => F / camDist(d);
+function P(x, d, z = 0) {
+  const k = F / camDist(d);
+  return [W / 2 + (x - camX) * k, HY + A / camDist(d) - z * k];
+}
+function screenToWorld(sx, sy) {
+  const dist = A / Math.max(1, sy - HY);
+  return [camX + (sx - W / 2) * dist / F, D0 + FD - dist];
+}
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const dist2 = (a, b) => Math.hypot(a.x - b.x, a.d - b.d);
 
-// ---------- Game state ----------
-let me, cpu, ball, owner = null, score = [0, 0], running = false;
-let pause = 0, msg = '', kickCharge = -1;
+// ---------- State ----------
+let me, cpu, ball, owner = null, score = [0, 0];
+let phase = 'menu', phaseT = 0, msg = '', kickCharge = -1, nextHumanKicks = true;
 
-function mkPlayer(x, col, ai) {
-  return { x, d: FD / 2, vx: 0, vd: 0, fx: ai ? -1 : 1, fd: 0, col, ai,
-    stun: 0, slide: 0, recover: 0, tcd: 0, ng: 0, run: 0, spd: 0, aim: 0 };
+function mkPlayer(x, col, ai, stam = 1) {
+  return { x, d: FD / 2, vx: 0, vd: 0, fx: ai ? -1 : 1, fd: 0, hx: ai ? -1 : 1, want: 0,
+    col, ai, stam, stun: 0, slide: 0, recover: 0, tcd: 0, ng: 0, run: 0, spd: 0, aim: 0 };
 }
-function kickoff() {
-  me = mkPlayer(FW * 0.32, '#e63946', false);
-  cpu = mkPlayer(FW * 0.68, '#1d6fe0', true);
-  ball = { x: FW / 2, d: FD / 2, z: 0, vx: 0, vd: 0, vz: 0 };
-  owner = null;
+function setupKickoff(humanKicks) {
+  const sm = me ? Math.min(1, me.stam + 0.3) : 1, sc = cpu ? Math.min(1, cpu.stam + 0.3) : 1;
+  const c = FW / 2;
+  me = mkPlayer(humanKicks ? c - PR - BR - 2 : c - 140, '#e63946', false, sm);
+  cpu = mkPlayer(humanKicks ? c + 140 : c + PR + BR + 2, '#1d6fe0', true, sc);
+  ball = { x: c, d: FD / 2, z: 0, vx: 0, vd: 0, vz: 0 };
+  owner = null; kickCharge = -1;
+  phase = 'ready'; phaseT = 1.4;
+  msg = humanKicks ? 'Your kick-off!' : 'CPU kick-off!';
 }
-kickoff();
 
 // ---------- Audio ----------
 let AC = null;
@@ -55,24 +84,23 @@ function beep(f, t = 0.08, type = 'square', vol = 0.15) {
   o.connect(g).connect(AC.destination); o.start(); o.stop(AC.currentTime + t);
 }
 
-// ---------- Input (multi-touch via pointer events) ----------
+// ---------- Input ----------
 const ptr = { move: null, mx: 0, my: 0, kick: null };
 const hit = (b, e) => Math.hypot(e.clientX - b.x, e.clientY - b.y) < b.r + 14;
+const playing = () => phase === 'play' || phase === 'ready';
 
 cv.addEventListener('pointerdown', e => {
   e.preventDefault();
-  if (!running) return;
+  if (!playing()) return;
   try { cv.setPointerCapture(e.pointerId); } catch (_) {}
   if (hit(btnK, e)) { ptr.kick = e.pointerId; kickCharge = 0; }
-  else if (hit(btnT, e)) { doTackle(me); }
+  else if (hit(btnT, e)) { if (phase === 'play') doTackle(me); }
   else if (ptr.move === null) { ptr.move = e.pointerId; ptr.mx = e.clientX; ptr.my = e.clientY; }
 });
-cv.addEventListener('pointermove', e => {
-  if (e.pointerId === ptr.move) { ptr.mx = e.clientX; ptr.my = e.clientY; }
-});
+cv.addEventListener('pointermove', e => { if (e.pointerId === ptr.move) { ptr.mx = e.clientX; ptr.my = e.clientY; } });
 function release(e) {
   if (e.pointerId === ptr.move) ptr.move = null;
-  if (e.pointerId === ptr.kick) { doKick(me, kickCharge); kickCharge = -1; ptr.kick = null; }
+  if (e.pointerId === ptr.kick) { if (phase === 'play') doKick(me, kickCharge); kickCharge = -1; ptr.kick = null; }
 }
 cv.addEventListener('pointerup', release);
 cv.addEventListener('pointercancel', release);
@@ -83,14 +111,100 @@ document.getElementById('go').addEventListener('click', async () => {
   try { await document.documentElement.requestFullscreen(); } catch (_) {}
   try { await screen.orientation.lock('landscape'); } catch (_) {}
   document.getElementById('start').style.display = 'none';
-  score = [0, 0]; kickoff(); running = true; pause = 1; msg = 'Kick-off!';
+  score = [0, 0]; me = cpu = null;
+  setupKickoff(Math.random() < 0.5);          // random first possession
+  camX = FW / 2;
 });
+
+// ---------- Movement physics ----------
+const topSpeed = p => (p.ai ? AI_TOP : HUMAN_TOP);
+const maxSpeed = p => topSpeed(p) * (0.5 + 0.5 * p.stam) * (owner === p ? 0.9 : 1);
+
+// Accelerate towards a target velocity with limited acceleration -> inertia.
+function accelTo(p, tvx, tvd, dt) {
+  const dvx = tvx - p.vx, dvd = tvd - p.vd, m = Math.hypot(dvx, dvd);
+  if (m < 1e-3) return;
+  const braking = tvx * p.vx + tvd * p.vd < 0 || Math.hypot(tvx, tvd) < p.spd - 5;
+  const a = (braking ? BRAKE : ACCEL) * (0.6 + 0.4 * p.stam) * dt;
+  if (m <= a) { p.vx = tvx; p.vd = tvd; } else { p.vx += dvx / m * a; p.vd += dvd / m * a; }
+}
+const busy = p => p.stun > 0 || p.slide > 0 || p.recover > 0;
+
+function humanInput(dt) {
+  const p = me;
+  p.want = 0;
+  if (busy(p)) return;
+  if (ptr.move !== null) {
+    const [tx, td] = screenToWorld(ptr.mx, ptr.my);
+    const dx = tx - p.x, dd = td - p.d, dist = Math.hypot(dx, dd);
+    if (dist > 12) {
+      p.want = Math.min(1, (dist - 12) / FULL_SPEED_DIST);
+      p.fx = dx / dist; p.fd = dd / dist;
+      const sp = p.want * maxSpeed(p);
+      accelTo(p, p.fx * sp, p.fd * sp, dt);
+      return;
+    }
+  }
+  accelTo(p, 0, 0, dt);
+}
+
+// ---------- AI ----------
+function aiThink(p, dt) {
+  if (busy(p)) return;
+  const opp = me, dB = dist2(p, ball);
+  let tx, td, frac;
+  if (owner === p) {
+    // Attack towards x = 0. If the defender blocks the way, swerve to one side.
+    const blocking = opp.x < p.x && opp.x > p.x - 140 && Math.abs(opp.d - p.d) < 70;
+    if (blocking && Math.abs(p.aim) < 80) p.aim = (opp.d < p.d ? 1 : -1) * (110 + Math.random() * 60);
+    tx = 0; td = clamp(p.d + p.aim * 0.6 + (FD / 2 - p.d) * 0.2, 30, FD - 30);
+    tx = p.x - 200;
+    frac = blocking ? 0.95 : 0.65;
+    if (p.stam < 0.25) frac = 0.5;
+    if (p.x < 400 && Math.random() < dt * 2) {
+      const gx = -p.x, gd = FD / 2 + (Math.random() - 0.5) * 110 - p.d, gl = Math.hypot(gx, gd);
+      p.fx = gx / gl; p.fd = gd / gl;
+      doKick(p, 0.3 + Math.random() * 0.5);
+      return;
+    }
+  } else if (owner === opp) {
+    // Defend goal at x = FW. Walk in carefully; only sprint if beaten.
+    const beaten = opp.x > p.x + 8;
+    const dO = dist2(p, opp);
+    if (beaten) { tx = opp.x + 45; td = opp.d; frac = 1; }
+    else {
+      const vx = FW - ball.x, vd = FD / 2 - ball.d, l = Math.hypot(vx, vd) || 1;
+      const stand = dO > 220 ? 90 : 50;
+      tx = ball.x + vx / l * stand; td = ball.d + vd / l * stand;
+      const off = Math.hypot(tx - p.x, td - p.d);
+      frac = dO > 300 ? 0.6 : dO > 150 ? 0.42 : 0.32;
+      if (off > 70) frac = Math.max(frac, 0.8);
+      if (dO < 46 && p.tcd <= 0 && Math.random() < dt * 1.3) {
+        const l2 = dB || 1; p.fx = (ball.x - p.x) / l2; p.fd = (ball.d - p.d) / l2;
+        doTackle(p); return;
+      }
+    }
+  } else {
+    // Loose ball: race for it if you can win it, otherwise drop back goal-side.
+    const meFirst = dB < dist2(opp, ball) * 1.3 || ball.x > p.x;
+    if (meFirst) { tx = ball.x + ball.vx * 0.3; td = ball.d + ball.vd * 0.3; frac = p.stam < 0.3 && dB > 200 ? 0.55 : 1; }
+    else { tx = (ball.x + FW) / 2 + 60; td = (ball.d + FD / 2) / 2; frac = 0.6; }
+    p.aim = (Math.random() - 0.5) * 100;
+  }
+  const dx = tx - p.x, dd = td - p.d, dist = Math.hypot(dx, dd);
+  if (dist > 4) {
+    p.fx = dx / dist; p.fd = dd / dist;
+    const sp = Math.min(frac * maxSpeed(p), dist * 3);
+    accelTo(p, p.fx * sp, p.fd * sp, dt);
+  } else accelTo(p, 0, 0, dt);
+  p.aim *= Math.exp(-0.6 * dt);
+}
 
 // ---------- Actions ----------
 function doKick(p, charge) {
   if (p.stun > 0 || p.slide > 0 || charge < 0) return;
-  if (Math.hypot(ball.x - p.x, ball.d - p.d) > KICK_R || ball.z > 40) return;
-  const c = Math.min(1, charge / 0.7), pw = 360 + 540 * c;
+  if (dist2(p, ball) > KICK_R || ball.z > 40) return;
+  const c = Math.min(1, charge / 0.7), pw = (360 + 540 * c) * (0.75 + 0.25 * p.stam);
   ball.vx = p.fx * pw + p.vx * 0.3;
   ball.vd = p.fd * pw + p.vd * 0.3;
   ball.vz = 90 + 290 * c;
@@ -98,106 +212,64 @@ function doKick(p, charge) {
   beep(180 + 200 * c, 0.1, 'triangle', 0.3);
 }
 function doTackle(p) {
-  if (p.stun > 0 || p.slide > 0 || p.recover > 0 || p.tcd > 0) return;
-  p.slide = 0.35; p.tcd = 1.1;
+  if (busy(p) || p.tcd > 0 || p.stam < 0.1) return;
+  if (p.spd > 40) { p.fx = p.vx / p.spd; p.fd = p.vd / p.spd; }
+  p.slideV = Math.max(p.spd, 250) + 120 * p.stam;
+  p.slide = 0.35; p.tcd = 1.1; p.stam = Math.max(0, p.stam - 0.12);
   if (!p.ai) beep(120, 0.12, 'sawtooth', 0.1);
-}
-
-// ---------- Simulation ----------
-function steer(p, tvx, tvd, dt) {
-  const k = Math.min(1, dt * 10);
-  p.vx += (tvx - p.vx) * k; p.vd += (tvd - p.vd) * k;
-}
-
-function humanInput(dt) {
-  const p = me;
-  if (p.stun > 0 || p.slide > 0 || p.recover > 0) return;
-  if (ptr.move !== null) {
-    const tx = (ptr.mx - OX) / S, td = (ptr.my - OY) / (S * K);
-    const dx = tx - p.x, dd = td - p.d, dist = Math.hypot(dx, dd);
-    if (dist > 12) {
-      const sp = Math.min(1, (dist - 12) / FULL_SPEED_DIST) * HUMAN_MAX;
-      p.fx = dx / dist; p.fd = dd / dist;
-      steer(p, p.fx * sp, p.fd * sp, dt);
-      return;
-    }
-  }
-  steer(p, 0, 0, dt);
-}
-
-function aiThink(p, dt) {
-  if (p.stun > 0 || p.slide > 0 || p.recover > 0) return;
-  const dB = Math.hypot(ball.x - p.x, ball.d - p.d);
-  let tx, td, face = null;
-  if (owner === p) {                                   // dribble towards your goal (x = 0)
-    tx = 0; td = FD / 2 + p.aim;
-    if (p.x < 340 && Math.random() < dt * 2.2) {
-      const gx = -p.x, gd = FD / 2 + (Math.random() - 0.5) * 100 - p.d, gl = Math.hypot(gx, gd);
-      p.fx = gx / gl; p.fd = gd / gl;
-      doKick(p, 0.25 + Math.random() * 0.5);
-      return;
-    }
-  } else if (owner === me) {                           // defend: get goal-side, then try a tackle
-    tx = ball.x + 34; td = ball.d;
-    if (dB < 48 && Math.random() < dt * 1.4) {
-      const l = Math.hypot(ball.x - p.x, ball.d - p.d) || 1;
-      p.fx = (ball.x - p.x) / l; p.fd = (ball.d - p.d) / l;
-      doTackle(p); return;
-    }
-  } else {                                             // loose ball: chase where it's going
-    tx = ball.x + ball.vx * 0.25; td = ball.d + ball.vd * 0.25;
-    p.aim = (Math.random() - 0.5) * 120;
-  }
-  const dx = tx - p.x, dd = td - p.d, dist = Math.hypot(dx, dd);
-  if (dist > 4) {
-    p.fx = dx / dist; p.fd = dd / dist;
-    const sp = Math.min(AI_MAX, dist * 4);
-    steer(p, p.fx * sp, p.fd * sp, dt);
-  } else steer(p, 0, 0, dt);
 }
 
 function movePlayer(p, other, dt) {
   p.stun = Math.max(0, p.stun - dt); p.tcd = Math.max(0, p.tcd - dt); p.ng = Math.max(0, p.ng - dt);
-  if (p.recover > 0) { p.recover -= dt; steer(p, 0, 0, dt); }
-  if (p.stun > 0) steer(p, 0, 0, dt * 0.5);
+  if (p.recover > 0) { p.recover -= dt; accelTo(p, 0, 0, dt); }
+  if (p.stun > 0) accelTo(p, 0, 0, dt * 0.6);
   if (p.slide > 0) {
     p.slide -= dt;
-    p.vx = p.fx * 430; p.vd = p.fd * 430;
-    if (Math.hypot(ball.x - p.x, ball.d - p.d) < 32 && ball.z < 20) {       // poke the ball away
+    p.vx = p.fx * p.slideV; p.vd = p.fd * p.slideV;
+    if (dist2(p, ball) < 32 && ball.z < 20) {
       ball.vx = p.fx * 300 + (Math.random() - 0.5) * 120;
       ball.vd = p.fd * 300 + (Math.random() - 0.5) * 120;
       ball.vz = 60; p.ng = 0.25; owner = null;
     }
-    if (other.stun <= 0 && Math.hypot(other.x - p.x, other.d - p.d) < PR * 2 + 6) {
+    if (other.stun <= 0 && dist2(other, p) < PR * 2 + 6) {
       other.stun = 0.9; other.ng = 0.9; if (owner === other) owner = null;
       beep(90, 0.15, 'square', 0.15);
     }
-    if (p.slide <= 0) { p.recover = 0.35; p.vx *= 0.2; p.vd *= 0.2; }
+    if (p.slide <= 0) { p.recover = 0.4; p.vx *= 0.25; p.vd *= 0.25; }
   }
-  p.x = clamp(p.x + p.vx * dt, PR, FW - PR);
+  p.x = clamp(p.x + p.vx * dt, -20, FW + 20);
   p.d = clamp(p.d + p.vd * dt, 0, FD);
   p.spd = Math.hypot(p.vx, p.vd);
+  if (p.spd > 20) p.hx = p.vx / p.spd;
   p.run += p.spd * dt * 0.06;
+  // fatigue
+  const f = p.spd / topSpeed(p);
+  if (f > WALK_FRAC) p.stam -= ((f - WALK_FRAC) / (1 - WALK_FRAC)) * DRAIN * dt;
+  else p.stam += RECOVER * (1 - f / WALK_FRAC * 0.7) * dt;
+  p.stam = clamp(p.stam, 0, 1);
 }
 
 function canControl(p) {
-  return p.stun <= 0 && p.ng <= 0 && p.slide <= 0 && ball.z < 14 &&
-    Math.hypot(ball.x - p.x, ball.d - p.d) < DRIBBLE_R;
+  return p.stun <= 0 && p.ng <= 0 && p.slide <= 0 && ball.z < 14 && dist2(p, ball) < DRIBBLE_R;
 }
-
-function dribble(dt) {
+function dribble() {
   const a = canControl(me), b = canControl(cpu);
-  owner = a && b ? (Math.hypot(ball.x - me.x, ball.d - me.d) < Math.hypot(ball.x - cpu.x, ball.d - cpu.d) ? me : cpu)
-        : a ? me : b ? cpu : null;
+  const prev = owner;
+  owner = a && b ? (dist2(me, ball) < dist2(cpu, ball) ? me : cpu) : a ? me : b ? cpu : null;
   if (!owner) return;
-  const p = owner, off = PR + BR + 2;
-  const tx = p.x + p.fx * off, td = p.d + p.fd * off;
+  const p = owner;
+  if (prev !== p && p.ai) p.aim = (Math.random() - 0.5) * 100;
+  // ball sits in front of the direction you're actually moving (or facing when slow)
+  let hx = p.fx, hd = p.fd;
+  if (p.spd > 40) { hx = p.vx / p.spd; hd = p.vd / p.spd; }
+  const off = PR + BR + 2;
+  const tx = p.x + hx * off, td = p.d + hd * off;
   ball.vx = p.vx + (tx - ball.x) * 12;
   ball.vd = p.vd + (td - ball.d) * 12;
   ball.vz = 0; ball.z = 0;
 }
 
-function ballPhysics(dt) {
+function ballPhysics(dt, detectGoals) {
   ball.x += ball.vx * dt; ball.d += ball.vd * dt; ball.z += ball.vz * dt;
   if (ball.z > 0 || ball.vz > 0) ball.vz -= GRAVITY * dt;
   if (ball.z < 0) { ball.z = 0; ball.vz = ball.vz < -120 ? -ball.vz * 0.5 : 0; }
@@ -206,21 +278,31 @@ function ballPhysics(dt) {
   if (ball.d < BR) { ball.d = BR; ball.vd = Math.abs(ball.vd) * 0.6; }
   if (ball.d > FD - BR) { ball.d = FD - BR; ball.vd = -Math.abs(ball.vd) * 0.6; }
   const inMouth = Math.abs(ball.d - FD / 2) < GOAL_HALF - BR && ball.z < GOAL_H;
-  if (ball.x < BR && !inMouth) { ball.x = BR; ball.vx = Math.abs(ball.vx) * 0.6; }
-  if (ball.x > FW - BR && !inMouth) { ball.x = FW - BR; ball.vx = -Math.abs(ball.vx) * 0.6; }
-  if (ball.x < -BR * 2) goal(1);
-  else if (ball.x > FW + BR * 2) goal(0);
+  const inGoal = ball.x < 0 || ball.x > FW;
+  if (!inGoal) {
+    if (ball.x < BR && !inMouth) { ball.x = BR; ball.vx = Math.abs(ball.vx) * 0.6; }
+    if (ball.x > FW - BR && !inMouth) { ball.x = FW - BR; ball.vx = -Math.abs(ball.vx) * 0.6; }
+  } else {                                            // inside the net: back + side netting
+    ball.d = clamp(ball.d, FD / 2 - GOAL_HALF + BR, FD / 2 + GOAL_HALF - BR);
+    if (ball.x < -GOAL_DEPTH + BR) { ball.x = -GOAL_DEPTH + BR; ball.vx *= -0.15; }
+    if (ball.x > FW + GOAL_DEPTH - BR) { ball.x = FW + GOAL_DEPTH - BR; ball.vx *= -0.15; }
+    ball.z = Math.min(ball.z, GOAL_H * 0.8);
+  }
+  if (detectGoals) {
+    if (ball.x < -BR) goal(1);
+    else if (ball.x > FW + BR) goal(0);
+  }
 }
 
 function goal(team) {
   score[team]++;
+  owner = null;
+  nextHumanKicks = team === 1;                        // whoever conceded kicks off
   const won = score[team] >= MATCH_GOALS;
   msg = won ? (team === 0 ? 'YOU WIN! 🏆' : 'CPU wins – rematch?') : (team === 0 ? 'GOAL! 🎉' : 'CPU scores!');
-  pause = won ? 3.5 : 2;
+  phase = won ? 'over' : 'goal'; phaseT = won ? 3.5 : 2.2;
   if (team === 0) [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => beep(f, 0.15, 'square', 0.12), i * 110));
   else beep(150, 0.4, 'sawtooth', 0.1);
-  ball.vx = ball.vd = 0;
-  if (won) setTimeout(() => { running = false; document.getElementById('start').style.display = 'flex'; }, 3400);
 }
 
 function separate() {
@@ -231,117 +313,180 @@ function separate() {
   }
 }
 
-function update(dt) {
-  if (!running) return;
-  if (pause > 0) {
-    pause -= dt;
-    if (pause <= 0) { if (msg !== 'Kick-off!') kickoff(); msg = ''; }
-    if (msg !== 'Kick-off!') ballPhysicsFrozen(dt);
-    return;
-  }
-  if (kickCharge >= 0) kickCharge += dt;
-  humanInput(dt); aiThink(cpu, dt);
-  movePlayer(me, cpu, dt); movePlayer(cpu, me, dt);
-  separate(); dribble(dt); ballPhysics(dt);
+function updateCamera(dt) {
+  const halfNear = (W / 2) / (F / D0);
+  const lo = -GOAL_DEPTH - 70 + halfNear, hi = FW + GOAL_DEPTH + 70 - halfNear;
+  const target = clamp(ball.x * 0.75 + me.x * 0.25, lo, hi);
+  camX += ((lo > hi ? FW / 2 : target) - camX) * Math.min(1, dt * 3);
 }
-function ballPhysicsFrozen(dt) { ball.z = Math.max(0, ball.z - 200 * dt); }
+
+function update(dt) {
+  if (phase === 'menu' || !me) return;
+  if (phase === 'ready') {
+    phaseT -= dt;
+    if (phaseT <= 0) { phase = 'play'; msg = ''; }
+  } else if (phase === 'play') {
+    if (kickCharge >= 0) kickCharge += dt;
+    humanInput(dt); aiThink(cpu, dt);
+    movePlayer(me, cpu, dt); movePlayer(cpu, me, dt);
+    separate(); dribble(); ballPhysics(dt, true);
+  } else {                                            // 'goal' or 'over': let things settle
+    for (const p of [me, cpu]) { p.slide = 0; p.want = 0; accelTo(p, 0, 0, dt); movePlayer(p, p === me ? cpu : me, dt); }
+    ballPhysics(dt, false);
+    phaseT -= dt;
+    if (phaseT <= 0) {
+      if (phase === 'goal') setupKickoff(nextHumanKicks);
+      else { phase = 'menu'; msg = ''; document.getElementById('start').style.display = 'flex'; }
+    }
+  }
+  updateCamera(dt);
+}
 
 // ---------- Rendering ----------
-function drawPitch() {
-  ctx.fillStyle = '#0d3b1a'; ctx.fillRect(0, 0, W, H);
-  const [x0, y0] = toS(0, 0), [x1, y1] = toS(FW, FD);
-  const n = 10;
-  for (let i = 0; i < n; i++) {
-    ctx.fillStyle = i % 2 ? '#2a9a45' : '#258c3e';
-    ctx.fillRect(x0 + (x1 - x0) * i / n, y0, (x1 - x0) / n + 1, y1 - y0);
+function poly(pts, fill, stroke, lw) {
+  ctx.beginPath();
+  pts.forEach((p, i) => i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]));
+  ctx.closePath();
+  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+  if (stroke) { ctx.strokeStyle = stroke; ctx.lineWidth = lw || 2; ctx.stroke(); }
+}
+function line(x1, d1, x2, d2) {
+  const a = P(x1, d1), b = P(x2, d2);
+  ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+}
+
+function drawStadium() {
+  // crowd / stands
+  const g = ctx.createLinearGradient(0, 0, 0, P(0, -40)[1]);
+  g.addColorStop(0, '#1b2238'); g.addColorStop(1, '#2d3554');
+  ctx.fillStyle = g; ctx.fillRect(0, 0, W, H);
+  // simple crowd dots
+  ctx.fillStyle = 'rgba(255,255,255,.08)';
+  const top = P(0, -40, 34)[1];
+  for (let i = 0; i < 160; i++) {
+    const x = ((i * 97.3 + camX * 0.6) % (W + 40)) - 20, y = (i * 53.7) % Math.max(10, top - 10);
+    ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI * 2); ctx.fill();
   }
-  ctx.strokeStyle = 'rgba(255,255,255,.85)'; ctx.lineWidth = Math.max(2, 2.5 * S);
-  ctx.strokeRect(x0, y0, x1 - x0, y1 - y0);
-  const [mx] = toS(FW / 2, 0);
-  ctx.beginPath(); ctx.moveTo(mx, y0); ctx.lineTo(mx, y1); ctx.stroke();
-  const [cx, cy] = toS(FW / 2, FD / 2);
-  ctx.beginPath(); ctx.ellipse(cx, cy, 70 * S, 70 * S * K, 0, 0, Math.PI * 2); ctx.stroke();
+  // grass surround
+  const X0 = -260, X1 = FW + 260;
+  poly([P(X0, -40), P(X1, -40), P(X1, FD + 200), P(X0, FD + 200)], '#1f7a36');
+  // advertising boards along the far side (generic, no brands)
+  const seg = 160, cols = ['#ffffff', '#ffd23f', '#3fa7ff', '#ffffff', '#ff6b6b'];
+  ctx.font = '800 1px system-ui';
+  for (let x = X0, i = 0; x < X1; x += seg, i++) {
+    poly([P(x, -40, 0), P(x + seg, -40, 0), P(x + seg, -40, 34), P(x, -40, 34)], cols[i % cols.length], 'rgba(0,0,0,.25)', 1);
+    const [cx, cy] = P(x + seg / 2, -40, 17), k = scaleAt(-40);
+    ctx.fillStyle = '#1b2238'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.font = `800 ${16 * k}px system-ui`;
+    ctx.fillText(i % 2 ? '⚽ KICK-ABOUT' : 'HAPPY BIRTHDAY!', cx, cy);
+  }
+}
+
+function drawPitch() {
+  const n = 11;
+  for (let i = 0; i < n; i++) {
+    const x0 = FW * i / n, x1 = FW * (i + 1) / n + 0.5;
+    poly([P(x0, 0), P(x1, 0), P(x1, FD), P(x0, FD)], i % 2 ? '#2fa24b' : '#29943f');
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  line(0, 0, FW, 0); line(FW, 0, FW, FD); line(FW, FD, 0, FD); line(0, FD, 0, 0);
+  line(FW / 2, 0, FW / 2, FD);
+  ctx.beginPath();
+  for (let i = 0; i <= 48; i++) {
+    const a = i / 48 * Math.PI * 2, p = P(FW / 2 + Math.cos(a) * 75, FD / 2 + Math.sin(a) * 75);
+    i ? ctx.lineTo(p[0], p[1]) : ctx.moveTo(p[0], p[1]);
+  }
+  ctx.stroke();
   for (const side of [0, 1]) {
-    const bx = side ? FW - 150 : 0;
-    const [a, b] = toS(bx, FD / 2 - 140), [c, d] = toS(bx + 150, FD / 2 + 140);
-    ctx.strokeRect(a, b, c - a, d - b);
+    const x = side ? FW : 0, s = side ? -1 : 1;
+    line(x, FD / 2 - 140, x + s * 150, FD / 2 - 140); line(x + s * 150, FD / 2 - 140, x + s * 150, FD / 2 + 140);
+    line(x + s * 150, FD / 2 + 140, x, FD / 2 + 140);
+    line(x, FD / 2 - 70, x + s * 55, FD / 2 - 70); line(x + s * 55, FD / 2 - 70, x + s * 55, FD / 2 + 70);
+    line(x + s * 55, FD / 2 + 70, x, FD / 2 + 70);
   }
 }
 
 function drawGoal(side, front) {
   const x = side ? FW : 0, bx = side ? FW + GOAL_DEPTH : -GOAL_DEPTH;
-  const d1 = FD / 2 - GOAL_HALF, d2 = FD / 2 + GOAL_HALF;
-  const P = (xx, dd, zz) => toS(xx, dd, zz);
-  ctx.lineWidth = Math.max(2, 3 * S);
-  if (!front) {                       // net (drawn behind players)
-    ctx.fillStyle = 'rgba(255,255,255,.18)'; ctx.strokeStyle = 'rgba(255,255,255,.35)';
-    ctx.beginPath();
-    for (const p of [P(x, d1, GOAL_H), P(bx, d1, GOAL_H * 0.8), P(bx, d2, GOAL_H * 0.8), P(x, d2, GOAL_H),
-      P(x, d2, 0), P(bx, d2, 0), P(bx, d1, 0), P(x, d1, 0)]) ctx.lineTo(p[0], p[1]);
-    ctx.closePath(); ctx.fill();
-    ctx.lineWidth = 1;
-    for (let i = 0; i <= 8; i++) {
-      const dd = d1 + (d2 - d1) * i / 8, a = P(bx, dd, 0), b = P(bx, dd, GOAL_H * 0.8);
-      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  const d1 = FD / 2 - GOAL_HALF, d2 = FD / 2 + GOAL_HALF, bh = GOAL_H * 0.8;
+  const net = 'rgba(255,255,255,.16)', netLine = 'rgba(255,255,255,.4)';
+  if (!front) {
+    poly([P(bx, d1, 0), P(bx, d2, 0), P(bx, d2, bh), P(bx, d1, bh)], net, netLine, 1);           // back
+    poly([P(x, d1, 0), P(bx, d1, 0), P(bx, d1, bh), P(x, d1, GOAL_H)], net, netLine, 1);          // far side
+    poly([P(x, d1, GOAL_H), P(bx, d1, bh), P(bx, d2, bh), P(x, d2, GOAL_H)], net, netLine, 1);    // roof
+    ctx.strokeStyle = netLine; ctx.lineWidth = 1;
+    for (let i = 1; i < 8; i++) {
+      const dd = d1 + (d2 - d1) * i / 8, a = P(bx, dd, 0), b = P(bx, dd, bh), c = P(x, dd, GOAL_H);
+      ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.stroke();
     }
-    ctx.lineWidth = Math.max(2, 3 * S); ctx.strokeStyle = '#fff';
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(3, 4 * scaleAt(d1));
     const a = P(x, d1, 0), b = P(x, d1, GOAL_H);
-    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();      // far post
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();               // far post
   } else {
-    ctx.strokeStyle = '#fff';
+    poly([P(x, d2, 0), P(bx, d2, 0), P(bx, d2, bh), P(x, d2, GOAL_H)], net, netLine, 1);          // near side net
+    ctx.strokeStyle = '#fff'; ctx.lineWidth = Math.max(3, 4 * scaleAt(d2));
     const a = P(x, d1, GOAL_H), b = P(x, d2, GOAL_H), c = P(x, d2, 0);
-    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.stroke(); // bar + near post
+    ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.lineTo(c[0], c[1]); ctx.stroke();
   }
 }
 
 function drawPlayer(p) {
-  const [sx, sy] = toS(p.x, p.d);
+  const [sx, sy] = P(p.x, p.d), s = scaleAt(p.d);
   ctx.fillStyle = 'rgba(0,0,0,.25)';
-  ctx.beginPath(); ctx.ellipse(sx, sy, PR * S, PR * S * 0.4, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(sx, sy, PR * s, PR * s * 0.45, 0, 0, Math.PI * 2); ctx.fill();
   ctx.save(); ctx.translate(sx, sy);
-  const dir = p.fx >= 0 ? 1 : -1;
+  const dir = p.hx >= 0 ? 1 : -1;
   if (p.slide > 0) ctx.rotate(dir * 1.1);
-  const s = S, swing = p.spd > 20 ? Math.sin(p.run) * 9 : 0;
+  const swing = p.spd > 20 ? Math.sin(p.run) * Math.min(10, p.spd / 25) : 0;
+  const tiredLean = (1 - p.stam) * 4 * dir;
   ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s; ctx.lineCap = 'round';
   ctx.beginPath(); ctx.moveTo(-3 * s, -20 * s); ctx.lineTo((-3 + swing) * s, 0);
   ctx.moveTo(3 * s, -20 * s); ctx.lineTo((3 - swing) * s, 0); ctx.stroke();
   ctx.fillStyle = p.col;
-  ctx.beginPath(); ctx.roundRect(-10 * s, -44 * s, 20 * s, 26 * s, 5 * s); ctx.fill();
+  ctx.beginPath(); ctx.roundRect((-10 + tiredLean * 0.5) * s, -44 * s, 20 * s, 26 * s, 5 * s); ctx.fill();
   ctx.fillStyle = '#f2c79b';
-  ctx.beginPath(); ctx.arc(0, -54 * s, 10 * s, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(tiredLean * s, -54 * s, 10 * s, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#222';
-  ctx.beginPath(); ctx.arc((dir * 4 + p.fd * 2) * s, -55 * s, 1.8 * s, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc((tiredLean + dir * 4) * s, -55 * s, 1.8 * s, 0, Math.PI * 2); ctx.fill();
   ctx.restore();
+  // stamina bar
+  const bw = 34 * s, by = sy - 74 * s;
+  ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(sx - bw / 2 - 1, by - 1, bw + 2, 6 * s + 2);
+  ctx.fillStyle = p.stam > 0.5 ? '#5ad65a' : p.stam > 0.25 ? '#ffd23f' : '#ff5a4f';
+  ctx.fillRect(sx - bw / 2, by, bw * p.stam, 6 * s);
   if (p.stun > 0) {
-    ctx.font = `${16 * S}px system-ui`; ctx.textAlign = 'center';
-    ctx.fillText('💫', sx + Math.sin(performance.now() / 120) * 8 * S, sy - 72 * S);
+    ctx.font = `${16 * s}px system-ui`; ctx.textAlign = 'center';
+    ctx.fillText('💫', sx + Math.sin(performance.now() / 120) * 8 * s, by - 10 * s);
+  } else if (p.stam < 0.2) {
+    ctx.font = `${14 * s}px system-ui`; ctx.textAlign = 'center';
+    ctx.fillText('💦', sx + 16 * s * dir, by - 8 * s);
   }
 }
 
 function drawArrow(p) {
-  if (p.stun > 0) return;
-  const frac = clamp(p.spd / HUMAN_MAX, 0, 1), len = 22 + 60 * frac;
-  const [ax, ay] = toS(p.x + p.fx * (PR + 6), p.d + p.fd * (PR + 6));
-  const [bx, by] = toS(p.x + p.fx * (PR + 6 + len), p.d + p.fd * (PR + 6 + len));
-  const ang = Math.atan2(by - ay, bx - ax), h = 12 * S;
-  ctx.strokeStyle = ctx.fillStyle = `rgba(255,230,60,${0.55 + 0.4 * frac})`;
-  ctx.lineWidth = 5 * S; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(ax, ay); ctx.lineTo(bx, by); ctx.stroke();
-  ctx.beginPath(); ctx.moveTo(bx + Math.cos(ang) * h, by + Math.sin(ang) * h);
-  ctx.lineTo(bx + Math.cos(ang + 2.4) * h, by + Math.sin(ang + 2.4) * h);
-  ctx.lineTo(bx + Math.cos(ang - 2.4) * h, by + Math.sin(ang - 2.4) * h); ctx.fill();
+  if (p.stun > 0 || p.slide > 0) return;
+  const frac = Math.max(p.want, 0), len = 24 + 70 * frac;
+  const a = P(p.x + p.fx * (PR + 6), p.d + p.fd * (PR + 6));
+  const b = P(p.x + p.fx * (PR + 6 + len), p.d + p.fd * (PR + 6 + len));
+  const ang = Math.atan2(b[1] - a[1], b[0] - a[0]), h = 13 * scaleAt(p.d);
+  ctx.strokeStyle = ctx.fillStyle = `rgba(255,230,60,${0.5 + 0.45 * frac})`;
+  ctx.lineWidth = 5 * scaleAt(p.d); ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(b[0] + Math.cos(ang) * h, b[1] + Math.sin(ang) * h);
+  ctx.lineTo(b[0] + Math.cos(ang + 2.4) * h, b[1] + Math.sin(ang + 2.4) * h);
+  ctx.lineTo(b[0] + Math.cos(ang - 2.4) * h, b[1] + Math.sin(ang - 2.4) * h); ctx.fill();
 }
 
 function drawBall() {
-  const [gx, gy] = toS(ball.x, ball.d), [sx, sy] = toS(ball.x, ball.d, ball.z + BR);
+  const s = scaleAt(ball.d), g = P(ball.x, ball.d), b = P(ball.x, ball.d, ball.z + BR);
   const shrink = 1 / (1 + ball.z / 120);
   ctx.fillStyle = 'rgba(0,0,0,.3)';
-  ctx.beginPath(); ctx.ellipse(gx, gy, BR * S * shrink, BR * S * 0.4 * shrink, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.ellipse(g[0], g[1], BR * s * shrink, BR * s * 0.45 * shrink, 0, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#fff'; ctx.strokeStyle = '#222'; ctx.lineWidth = 1.5;
-  ctx.beginPath(); ctx.arc(sx, sy, BR * S, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.arc(b[0], b[1], BR * s, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
   ctx.fillStyle = '#222';
   const rot = ball.x / BR;
-  ctx.beginPath(); ctx.arc(sx + Math.cos(rot) * BR * S * 0.4, sy + Math.sin(rot) * BR * S * 0.4, BR * S * 0.35, 0, Math.PI * 2); ctx.fill();
+  ctx.beginPath(); ctx.arc(b[0] + Math.cos(rot) * BR * s * 0.4, b[1] + Math.sin(rot) * BR * s * 0.4, BR * s * 0.35, 0, Math.PI * 2); ctx.fill();
 }
 
 function drawButton(b, active, charge) {
@@ -358,6 +503,8 @@ function drawButton(b, active, charge) {
 }
 
 function render() {
+  drawStadium();
+  if (!me) return;
   drawPitch();
   drawGoal(0, false); drawGoal(1, false);
   const items = [me, cpu, ball].sort((a, b) => a.d - b.d);
@@ -371,16 +518,18 @@ function render() {
     ctx.beginPath(); ctx.arc(ptr.mx, ptr.my, 26, 0, Math.PI * 2); ctx.stroke();
   }
   // HUD
-  ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillStyle = '#fff';
-  ctx.font = '800 34px system-ui';
-  ctx.fillText(`YOU  ${score[0]} : ${score[1]}  CPU`, W / 2, 34);
-  ctx.font = '500 14px system-ui'; ctx.globalAlpha = 0.7;
-  ctx.fillText(`first to ${MATCH_GOALS}`, W / 2, 60); ctx.globalAlpha = 1;
+  ctx.fillStyle = 'rgba(0,0,0,.45)';
+  ctx.beginPath(); ctx.roundRect(W / 2 - 150, 10, 300, 52, 12); ctx.fill();
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.font = '800 30px system-ui';
+  ctx.fillStyle = '#ff7b84'; ctx.fillText('YOU', W / 2 - 95, 36);
+  ctx.fillStyle = '#7fb2ff'; ctx.fillText('CPU', W / 2 + 95, 36);
+  ctx.fillStyle = '#fff'; ctx.fillText(`${score[0]} : ${score[1]}`, W / 2, 36);
   if (msg) {
-    ctx.font = '900 72px system-ui'; ctx.lineWidth = 8; ctx.strokeStyle = '#0d3b1a';
-    ctx.strokeText(msg, W / 2, H / 2); ctx.fillText(msg, W / 2, H / 2);
+    ctx.font = '900 68px system-ui'; ctx.lineWidth = 8; ctx.strokeStyle = '#0d3b1a';
+    ctx.strokeText(msg, W / 2, H * 0.42); ctx.fillText(msg, W / 2, H * 0.42);
   }
-  if (running) { drawButton(btnK, ptr.kick !== null, kickCharge); drawButton(btnT, me.slide > 0, 0); }
+  if (playing()) { drawButton(btnK, ptr.kick !== null, kickCharge); drawButton(btnT, me.slide > 0, 0); }
 }
 
 // ---------- Loop ----------
