@@ -1,9 +1,9 @@
 'use strict';
 // ---------- Constants (world units; d = depth across the pitch, z = height) ----------
-const FW = 1000, FD = 400, K = 0.55;          // pitch length, depth, depth squash for side view
+const FW = 1000, FD = 600, K = 0.35;          // pitch length, depth, depth squash for side view
 const GOAL_HALF = 75, GOAL_H = 95, GOAL_DEPTH = 35;
 const PR = 16, BR = 9;                          // player / ball radius
-const HUMAN_MAX = 270, AI_MAX = 210;            // run speeds
+const HUMAN_MAX = 270, AI_MAX = 200;            // run speeds
 const DRIBBLE_R = 28, KICK_R = 44, FULL_SPEED_DIST = 220;
 const GRAVITY = 900, MATCH_GOALS = 5;
 
