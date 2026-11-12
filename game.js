@@ -5,7 +5,7 @@
 //  FD = near touchline), z = height. Rendered with a perspective camera
 //  placed above/behind the near touchline that scrolls with the play.
 // =====================================================================
-const FW = 1100, FD = 400;
+const FW = 1300, FD = 400;
 const GOAL_HALF = 75, GOAL_H = 95, GOAL_DEPTH = 40;
 const PR = 16, BR = 9;
 const DRIBBLE_R = 28, KICK_R = 44;
@@ -32,8 +32,10 @@ const DAZZLE_TIME = 1.0, DAZZLE_IMMUNE = 2.5;
 // --- goal frame ---
 const POST_R = 4;
 
-// --- goalkeeper zone (goal area) ---
-const GA_DEPTH = 100, GA_HALF = 130;      // size of the goal area in front of each goal
+// --- boxes: hands are allowed in your own penalty area ---
+const PA_DEPTH = 230, PA_HALF = 160;    // penalty area (= goalkeeper zone)
+const GA_DEPTH = 90, GA_HALF = 100;     // goal area (6-yard box), drawn only
+const PEN_SPOT = 145;                   // penalty spot distance from the goal line
 const CATCH_SPEED = 480;                // slower shots than this are caught
 const PARRY_SPEED = 720;                // shots up to this speed can be parried (60% chance)
 const KEEP_REACH = 46, HOLD_T = 0.9;    // reach of the hands; how long the keeper holds the ball
@@ -543,7 +545,7 @@ function update(dt) {
 // ---------- Goalkeeper zone ----------
 function inKeeperZone(p) {
   const gx = p.ai ? FW : 0;
-  return Math.abs(p.x - gx) < GA_DEPTH && Math.abs(p.d - FD / 2) < GA_HALF;
+  return Math.abs(p.x - gx) < PA_DEPTH && Math.abs(p.d - FD / 2) < PA_HALF;
 }
 function keeperCheck() {
   if (ball.held || owner) return;
@@ -634,7 +636,7 @@ function drawPitch() {
     const x0 = FW * i / n, x1 = FW * (i + 1) / n + 0.5;
     poly([P(x0, 0), P(x1, 0), P(x1, FD), P(x0, FD)], i % 2 ? '#2fa24b' : '#29943f');
   }
-  ctx.strokeStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+  ctx.strokeStyle = ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.lineWidth = 3; ctx.lineCap = 'round';
   line(0, 0, FW, 0); line(FW, 0, FW, FD); line(FW, FD, 0, FD); line(0, FD, 0, 0);
   line(FW / 2, 0, FW / 2, FD);
   ctx.beginPath();
@@ -645,8 +647,20 @@ function drawPitch() {
   ctx.stroke();
   for (const side of [0, 1]) {
     const x = side ? FW : 0, s = side ? -1 : 1;
-    line(x, FD / 2 - 140, x + s * 150, FD / 2 - 140); line(x + s * 150, FD / 2 - 140, x + s * 150, FD / 2 + 140);
-    line(x + s * 150, FD / 2 + 140, x, FD / 2 + 140);
+    line(x, FD / 2 - PA_HALF, x + s * PA_DEPTH, FD / 2 - PA_HALF);
+    line(x + s * PA_DEPTH, FD / 2 - PA_HALF, x + s * PA_DEPTH, FD / 2 + PA_HALF);
+    line(x + s * PA_DEPTH, FD / 2 + PA_HALF, x, FD / 2 + PA_HALF);
+    // penalty spot + arc ("the D") outside the box
+    const ps = P(x + s * PEN_SPOT, FD / 2);
+    ctx.beginPath(); ctx.ellipse(ps[0], ps[1], 3, 2, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath();
+    let first = true;
+    for (let i = 0; i <= 30; i++) {
+      const a = -0.93 + 1.86 * i / 30, ax = x + s * (PEN_SPOT + Math.cos(a) * 75), ad = FD / 2 + Math.sin(a) * 75;
+      if (Math.abs(ax - x) < PA_DEPTH) continue;
+      const q = P(ax, ad); first ? ctx.moveTo(q[0], q[1]) : ctx.lineTo(q[0], q[1]); first = false;
+    }
+    ctx.stroke();
     line(x, FD / 2 - GA_HALF, x + s * GA_DEPTH, FD / 2 - GA_HALF);
     line(x + s * GA_DEPTH, FD / 2 - GA_HALF, x + s * GA_DEPTH, FD / 2 + GA_HALF);
     line(x + s * GA_DEPTH, FD / 2 + GA_HALF, x, FD / 2 + GA_HALF);

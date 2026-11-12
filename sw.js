@@ -1,5 +1,5 @@
 // Network-first while you iterate; falls back to cache when offline.
-const CACHE = 'kickabout-v6';
+const CACHE = 'kickabout-v7';
 const ASSETS = ['./', 'index.html', 'game.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {
