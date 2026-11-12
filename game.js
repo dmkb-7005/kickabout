@@ -21,8 +21,8 @@ const SHOT_SPREAD_FAR = 0.22;           // extra radians at a full pitch length 
 
 // --- aiming (hold KICK) ---
 const SLOWMO = 0.25;                    // game speed while aiming
-const AIM_SHAKE_MAX = 0.75;             // radians of aim-line shake at the worst point (~43°)
-const AIM_SHAKE_TIME = 8;               // seconds of holding until the shake is at its maximum
+const AIM_SHAKE_MAX = 0.95;             // radians of aim-line shake at the worst point (~43°)
+const AIM_SHAKE_TIME = 4;               // seconds of holding until the shake is at its maximum
 
 // --- feints ---
 const FEINT_WINDOW = 1.6;               // the 3 joystick flicks must happen within this many seconds
@@ -36,9 +36,9 @@ const POST_R = 4;
 const PA_DEPTH = 230, PA_HALF = 160;    // penalty area (= goalkeeper zone)
 const GA_DEPTH = 90, GA_HALF = 100;     // goal area (6-yard box), drawn only
 const PEN_SPOT = 145;                   // penalty spot distance from the goal line
-const CATCH_SPEED = 480;                // slower shots than this are caught
-const PARRY_SPEED = 720;                // shots up to this speed can be parried (60% chance)
-const KEEP_REACH = 46, HOLD_T = 0.9;    // reach of the hands; how long the keeper holds the ball
+const CATCH_SPEED = 680;                // slower shots than this are caught
+const PARRY_SPEED = 920;                // shots up to this speed can be parried (60% chance)
+const KEEP_REACH = 60, HOLD_T = 2.0;    // reach of the hands; how long the keeper holds the ball
 
 // --- movement / fatigue tuning ---
 const HUMAN_TOP = 280, AI_TOP = 255;   // top speed when fresh
