@@ -25,12 +25,18 @@ const AIM_SHAKE_MAX = 0.75;             // radians of aim-line shake at the wors
 const AIM_SHAKE_TIME = 8;               // seconds of holding until the shake is at its maximum
 
 // --- feints ---
-const FEINT_WINDOW = 1.1;               // the 3 joystick flicks must happen within this many seconds
+const FEINT_WINDOW = 1.6;               // the 3 joystick flicks must happen within this many seconds
 const FEINT_CD = 2;                     // seconds before another feint can be done
 const DAZZLE_TIME = 1.0, DAZZLE_IMMUNE = 2.5;
 
 // --- goal frame ---
 const POST_R = 4;
+
+// --- goalkeeper zone (goal area) ---
+const GA_DEPTH = 70, GA_HALF = 95;      // size of the goal area in front of each goal
+const CATCH_SPEED = 480;                // slower shots than this are caught
+const PARRY_SPEED = 720;                // shots up to this speed can be parried (60% chance)
+const KEEP_REACH = 46, HOLD_T = 0.9;    // reach of the hands; how long the keeper holds the ball
 
 // --- movement / fatigue tuning ---
 const HUMAN_TOP = 280, AI_TOP = 255;   // top speed when fresh
@@ -45,8 +51,7 @@ const VIEW_W = 640;    // roughly how much pitch length is visible at mid-depth
 
 const cv = document.getElementById('c'), ctx = cv.getContext('2d');
 let W, H, F, A, HY, camX = FW / 2;
-const btnK = { r: 70, label: 'KICK', col: '#ffd23f' };
-const btnT = { r: 52, label: 'TACKLE', col: '#ff8c42' };
+const btnK = { r: 88, label: 'KICK', col: '#ffd23f' };
 const btnS = { r: 52, label: 'SPRINT', col: '#7ee081' };
 const joy = { r: 110 };
 
@@ -59,9 +64,8 @@ function resize() {
   A = (nearY - farY) / (1 / D0 - 1 / (D0 + FD));
   HY = nearY - A / D0;
   F = (D0 + FD / 2) * W / VIEW_W;
-  btnK.x = 40 + btnK.r; btnK.y = H - 30 - btnK.r;
-  btnT.x = btnK.x + btnK.r + 30 + btnT.r; btnT.y = H - 22 - btnT.r;
-  btnS.x = btnK.x; btnS.y = btnK.y - btnK.r - 34 - btnS.r;
+  btnK.x = 40 + btnK.r; btnK.y = H - 36 - btnK.r;
+  btnS.x = btnK.x; btnS.y = btnK.y - btnK.r - 30 - btnS.r;
   joy.r = Math.min(120, H * 0.15);
   joy.x = W - 50 - joy.r; joy.y = H - 50 - joy.r;
 }
@@ -100,11 +104,12 @@ function mkPlayer(x, col, ai, stam = 1) {
 function setupKickoff(humanKicks) {
   const sm = me ? Math.min(1, me.stam + 0.3) : 1, sc = cpu ? Math.min(1, cpu.stam + 0.3) : 1;
   const c = FW / 2;
-  me = mkPlayer(humanKicks ? c - PR - BR - 2 : c - 140, '#e63946', false, sm);
-  cpu = mkPlayer(humanKicks ? c + 140 : c + PR + BR + 2, '#1d6fe0', true, sc);
-  ball = { x: c, d: FD / 2, z: 0, vx: 0, vd: 0, vz: 0 };
+  me = mkPlayer(humanKicks ? c - PR - BR - 2 : c - 230, '#e63946', false, sm);
+  cpu = mkPlayer(humanKicks ? c + 230 : c + PR + BR + 2, '#1d6fe0', true, sc);
+  ball = { x: c, d: FD / 2, z: 0, vx: 0, vd: 0, vz: 0, held: null, holdT: 0 };
   owner = null; aim.active = false; feint.tokens.length = 0;
   kicker = humanKicks ? me : cpu; kickoffLock = true; kickoffT = 0;
+  cpu.calm = humanKicks ? 0 : 2.5;           // CPU starts its kick-off slowly
   sprint.active = false;
   phase = 'ready'; phaseT = 1.4;
   msg = humanKicks ? 'Your kick-off!' : 'CPU kick-off!';
@@ -130,8 +135,10 @@ cv.addEventListener('pointerdown', e => {
   e.preventDefault();
   if (!playing()) return;
   try { cv.setPointerCapture(e.pointerId); } catch (_) {}
-  if (hit(btnK, e)) { ptr.kick = e.pointerId; startAim(); }
-  else if (hit(btnT, e)) { if (phase === 'play') doTackle(me); }
+  if (hit(btnK, e)) {                         // one action button: KICK with the ball, TACKLE without
+    if (canKickNow()) { ptr.kick = e.pointerId; startAim(); }
+    else if (phase === 'play') doTackle(me);
+  }
   else if (hit(btnS, e)) { ptr.sprint = e.pointerId; startSprint(); }
   else if (ptr.move === null && Math.hypot(e.clientX - joy.x, e.clientY - joy.y) < joy.r * 1.7) {
     ptr.move = e.pointerId; ptr.mx = e.clientX; ptr.my = e.clientY;
@@ -193,6 +200,13 @@ function humanInput(dt) {
     accelTo(p, aim.lvx, aim.lvd, dt);
     return;
   }
+  if (ball.held === p) {                       // goalkeeper holding the ball: stand still, joystick turns you
+    if (ptr.move !== null) {
+      const dx = ptr.mx - joy.x, dd = ptr.my - joy.y, l = Math.hypot(dx, dd);
+      if (l > 10) { p.fx = dx / l; p.fd = dd / l; }
+    }
+    accelTo(p, 0, 0, dt * 2); return;
+  }
   if (ptr.move !== null) {
     recordFlick((ptr.mx - joy.x) / joy.r, (ptr.my - joy.y) / joy.r);
     // virtual joystick: direction = finger relative to circle centre, speed = distance from centre
@@ -209,9 +223,10 @@ function humanInput(dt) {
 }
 
 // ---------- Aiming ----------
+const canKickNow = () => phase === 'play' &&
+  (owner === me || ball.held === me || (dist2(me, ball) < KICK_R * 1.3 && ball.z < 40));
 function startAim() {
-  if (phase !== 'play' || busy(me)) return;
-  if (!(owner === me || (dist2(me, ball) < KICK_R * 1.3 && ball.z < 40))) return;
+  if (busy(me) || !canKickNow()) return;
   aim.active = true; aim.t0 = nowS();
   aim.lvx = me.vx; aim.lvd = me.vd;
   aim.ang = Math.atan2(me.fd, me.fx); aim.power = 0.5;
@@ -234,11 +249,10 @@ function releaseAim() {
 // up-down-up (or down-up-down) next to the CPU = dazzle it for a second
 // right-left-right with the CPU in front = chip the ball over it
 function recordFlick(nx, ny) {
-  if (Math.hypot(nx, ny) < 0.45) return;
+  if (Math.hypot(nx, ny) < 0.3) return;
   let k;
-  if (Math.abs(ny) > Math.abs(nx) * 1.2) k = ny < 0 ? 'U' : 'D';
-  else if (Math.abs(nx) > Math.abs(ny) * 1.2) k = nx > 0 ? 'R' : 'L';
-  else return;
+  if (Math.abs(ny) >= Math.abs(nx)) k = ny < 0 ? 'U' : 'D';
+  else k = nx > 0 ? 'R' : 'L';
   const T = feint.tokens, t = nowS();
   if (T.length && T[T.length - 1].k === k) return;
   T.push({ k, t }); while (T.length > 3) T.shift();
@@ -254,6 +268,7 @@ function tryFeint(seq) {
   } else if (seq === 'RLR' && o.x > me.x && o.x - me.x < 240 && Math.abs(o.d - me.d) < 100) {
     ball.vx = 300; ball.vd = me.vd * 0.3; ball.vz = 420; ball.z = Math.max(ball.z, 1);
     me.ng = 0.2; owner = null;
+    o.dazzle = DAZZLE_TIME * (2 - aiSkill()); o.vx *= 0.3; o.vd *= 0.3;
     feint.cd = FEINT_CD; feint.tokens.length = 0;
     popup('Over the top!', me.x, me.d, '#7ee081'); beep(500, 0.15, 'triangle', 0.25);
   }
@@ -263,6 +278,17 @@ function tryFeint(seq) {
 function aiThink(p, dt) {
   if (busy(p)) return;
   if (p.dazzle > 0) { accelTo(p, 0, 0, dt * 0.7); return; }
+  if (ball.held === p) { p.fx = -1; p.fd = (FD / 2 - p.d) / 300; accelTo(p, 0, 0, dt * 2); return; }
+  if (kickoffLock && kicker !== p) {
+    // waiting for your kick-off: pace impatiently around the edge of the circle, never inside
+    const t = nowS(), ang = Math.sin(t * 0.7) * 0.9, R = CIRCLE_R + 70 + Math.sin(t * 1.9) * 15;
+    const tx = FW / 2 + Math.cos(ang) * R, td = FD / 2 + Math.sin(ang) * R;
+    const dx = tx - p.x, dd = td - p.d, l = Math.hypot(dx, dd) || 1;
+    p.fx = (me.x - p.x) / (dist2(me, p) || 1); p.fd = (me.d - p.d) / (dist2(me, p) || 1);
+    accelTo(p, dx / l * Math.min(70, l * 3), dd / l * Math.min(70, l * 3), dt);
+    return;
+  }
+  if (p.calm > 0) p.calm -= dt;
   const opp = me, dB = dist2(p, ball);
   let tx, td, frac;
   if (owner === p) {
@@ -273,6 +299,7 @@ function aiThink(p, dt) {
     tx = p.x - 200;
     frac = blocking ? 0.95 : 0.65;
     if (p.stam < 0.25) frac = 0.5;
+    if (p.calm > 0) frac = Math.min(frac, 0.25 + 0.75 * (1 - p.calm / 2.5));
     const dGoal = Math.hypot(p.x, p.d - FD / 2);
     const shootRate = dGoal < 230 ? 2.5 : dGoal < 330 ? 0.8 : dGoal < 480 ? 0.15 : 0;
     if (Math.random() < dt * shootRate) {
@@ -318,6 +345,7 @@ function aiThink(p, dt) {
 function doKick(p, power) {
   if (p.stun > 0 || p.slide > 0) return;
   if (dist2(p, ball) > KICK_R || ball.z > 40) return;
+  if (ball.held === p) ball.held = null;      // goalkeeper punt
   const c = clamp(power, 0, 1);
   const pw = (300 + 600 * c) * (0.75 + 0.25 * p.stam) * (0.92 + Math.random() * 0.16);
   // accuracy: the further from the goal you're attacking, the bigger the random error
@@ -356,7 +384,7 @@ function movePlayer(p, other, dt) {
       ball.vd = p.fd * 300 + (Math.random() - 0.5) * 120;
       ball.vz = 60; p.ng = 0.25; owner = null;
     }
-    if (other.stun <= 0 && dist2(other, p) < PR * 2 + 6) {
+    if (other.stun <= 0 && ball.held !== other && dist2(other, p) < PR * 2 + 6) {
       other.stun = 0.9; other.ng = 0.9; if (owner === other) owner = null;
       beep(90, 0.15, 'square', 0.15);
     }
@@ -466,8 +494,10 @@ function goal(team) {
 function separate() {
   const dx = cpu.x - me.x, dd = cpu.d - me.d, dist = Math.hypot(dx, dd);
   if (dist > 0 && dist < PR * 2) {
-    const push = (PR * 2 - dist) / 2, nx = dx / dist, nd = dd / dist;
-    me.x -= nx * push; me.d -= nd * push; cpu.x += nx * push; cpu.d += nd * push;
+    const over = PR * 2 - dist, nx = dx / dist, nd = dd / dist;
+    const wMe = owner === me ? 0 : owner === cpu ? 1 : 0.5;   // ball carrier holds their ground
+    me.x -= nx * over * wMe; me.d -= nd * over * wMe;
+    cpu.x += nx * over * (1 - wMe); cpu.d += nd * over * (1 - wMe);
   }
 }
 
@@ -488,7 +518,8 @@ function update(dt) {
     if (aim.active && (me.stun > 0 || me.slide > 0 || (owner !== me && dist2(me, ball) > KICK_R * 2))) aim.active = false;
     humanInput(dt); aiThink(cpu, dt);
     movePlayer(me, cpu, dt); movePlayer(cpu, me, dt);
-    separate(); enforceKickoff(dt); dribble(); ballPhysics(dt, true);
+    separate(); enforceKickoff(dt); keeperCheck();
+    if (ball.held) heldBall(dt); else { dribble(); ballPhysics(dt, true); }
     if (sprint.active) { sprint.t -= dt; if (sprint.t <= 0) endSprint(); }
   } else {                                            // 'goal' or 'over': let things settle
     for (const p of [me, cpu]) { p.slide = 0; p.want = 0; accelTo(p, 0, 0, dt); movePlayer(p, p === me ? cpu : me, dt); }
@@ -503,11 +534,44 @@ function update(dt) {
   updateCamera(dt);
 }
 
+// ---------- Goalkeeper zone ----------
+function inKeeperZone(p) {
+  const gx = p.ai ? FW : 0;
+  return Math.abs(p.x - gx) < GA_DEPTH && Math.abs(p.d - FD / 2) < GA_HALF;
+}
+function keeperCheck() {
+  if (ball.held || owner) return;
+  for (const p of [me, cpu]) {
+    if (p.stun > 0 || p.slide > 0 || p.ng > 0 || p.dazzle > 0 || !inKeeperZone(p)) continue;
+    if (!(p.ai ? ball.vx > 30 : ball.vx < -30)) continue;          // only shots coming at your goal
+    if (dist2(p, ball) > KEEP_REACH || ball.z > 75) continue;
+    const sp = Math.hypot(ball.vx, ball.vd, ball.vz), sk = p.ai ? aiSkill() : 1;
+    if (sp < CATCH_SPEED * sk) {
+      ball.held = p; ball.holdT = HOLD_T; owner = p;
+      popup('Caught!', p.x, p.d, '#7fb2ff'); beep(300, 0.1, 'triangle', 0.2);
+    } else if (sp < PARRY_SPEED * sk && Math.random() < 0.6 * sk) {
+      ball.vx *= -0.35; ball.vd = ball.vd * 0.3 + (Math.random() - 0.5) * 300; ball.vz = 150;
+      p.ng = 0.4; popup('Saved!', p.x, p.d, '#7fb2ff'); beep(220, 0.15, 'square', 0.15);
+    } else p.ng = 0.5;                                               // beaten – don't check this shot again
+    return;
+  }
+}
+function heldBall(dt) {
+  const p = ball.held;
+  ball.x = p.x + (p.hx >= 0 ? 1 : -1) * 10; ball.d = p.d + 0.5; ball.z = 24;
+  ball.vx = ball.vd = ball.vz = 0; owner = p;
+  ball.holdT -= dt;
+  if (ball.holdT <= 0 && !(p === me && aim.active)) {               // drop it to the feet and play on
+    ball.held = null; ball.z = 0;
+    ball.x = p.x + p.fx * (PR + BR + 2); ball.d = p.d + p.fd * (PR + BR + 2);
+  }
+}
+
 // Keep the player without the ball outside the centre circle until the ball leaves it.
 function enforceKickoff(dt) {
   if (!kickoffLock) return;
   kickoffT += dt;
-  if (Math.hypot(ball.x - FW / 2, ball.d - FD / 2) > CIRCLE_R || kickoffT > 5) { kickoffLock = false; return; }
+  if (Math.hypot(ball.x - FW / 2, ball.d - FD / 2) > CIRCLE_R || kicker.spd > 25) { kickoffLock = false; return; }
   const o = kicker === me ? cpu : me;
   const dx = o.x - FW / 2, dd = o.d - FD / 2, l = Math.hypot(dx, dd) || 1, minR = CIRCLE_R + PR;
   if (l < minR) {
@@ -577,8 +641,9 @@ function drawPitch() {
     const x = side ? FW : 0, s = side ? -1 : 1;
     line(x, FD / 2 - 140, x + s * 150, FD / 2 - 140); line(x + s * 150, FD / 2 - 140, x + s * 150, FD / 2 + 140);
     line(x + s * 150, FD / 2 + 140, x, FD / 2 + 140);
-    line(x, FD / 2 - 70, x + s * 55, FD / 2 - 70); line(x + s * 55, FD / 2 - 70, x + s * 55, FD / 2 + 70);
-    line(x + s * 55, FD / 2 + 70, x, FD / 2 + 70);
+    line(x, FD / 2 - GA_HALF, x + s * GA_DEPTH, FD / 2 - GA_HALF);
+    line(x + s * GA_DEPTH, FD / 2 - GA_HALF, x + s * GA_DEPTH, FD / 2 + GA_HALF);
+    line(x + s * GA_DEPTH, FD / 2 + GA_HALF, x, FD / 2 + GA_HALF);
   }
 }
 
@@ -616,10 +681,14 @@ function drawPlayer(p) {
   const swing = p.spd > 20 ? Math.sin(p.run) * Math.min(10, p.spd / 25) : 0;
   const tiredLean = (1 - p.stam) * 4 * dir;
   ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s; ctx.lineCap = 'round';
-  ctx.beginPath(); ctx.moveTo(-3 * s, -20 * s); ctx.lineTo((-3 + swing) * s, 0);
-  ctx.moveTo(3 * s, -20 * s); ctx.lineTo((3 - swing) * s, 0); ctx.stroke();
+  if (sprinting(p) && p.spd > 30) drawWheel(s, p.run * 3 * dir);
+  else {
+    ctx.beginPath(); ctx.moveTo(-3 * s, -20 * s); ctx.lineTo((-3 + swing) * s, 0);
+    ctx.moveTo(3 * s, -20 * s); ctx.lineTo((3 - swing) * s, 0); ctx.stroke();
+  }
   ctx.fillStyle = p.col;
   ctx.beginPath(); ctx.roundRect((-10 + tiredLean * 0.5) * s, -44 * s, 20 * s, 26 * s, 5 * s); ctx.fill();
+  drawArms(p, s, dir, swing);
   ctx.fillStyle = '#f2c79b';
   ctx.beginPath(); ctx.arc(tiredLean * s, -54 * s, 10 * s, 0, Math.PI * 2); ctx.fill();
   ctx.fillStyle = '#222';
@@ -641,6 +710,51 @@ function drawPlayer(p) {
     ctx.font = `${14 * s}px system-ui`; ctx.textAlign = 'center';
     ctx.fillText('💦', sx + 16 * s * dir, by - 8 * s);
   }
+}
+
+// Cartoon "wheel legs" while sprinting
+function drawWheel(s, rot) {
+  const cy = -11 * s, r = 11 * s;
+  ctx.lineWidth = 3 * s;
+  ctx.beginPath(); ctx.arc(0, cy, r, 0, Math.PI * 2); ctx.stroke();
+  for (let i = 0; i < 4; i++) {
+    const a = rot + i * Math.PI / 2;
+    ctx.beginPath(); ctx.moveTo(0, cy); ctx.lineTo(Math.cos(a) * r, cy + Math.sin(a) * r); ctx.stroke();
+  }
+  ctx.strokeStyle = 'rgba(255,255,255,.7)'; ctx.lineWidth = 2 * s;            // speed whooshes
+  for (let i = 0; i < 3; i++) {
+    const a = rot * 1.3 + i * 2.1;
+    ctx.beginPath(); ctx.arc(0, cy, r + 4 * s, a, a + 1.1); ctx.stroke();
+  }
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s;
+}
+
+// Arms explain what's happening: shielding, holding off, goalkeeping
+function armMode(p) {
+  if (ball.held === p) return 'hold';
+  const o = p === me ? cpu : me, d = dist2(p, o);
+  if (owner === p && d < PR * 2 + 18) {
+    const facing = p.hx >= 0 ? 1 : -1;
+    return (o.x - p.x) * facing >= 0 ? 'push' : 'spread';
+  }
+  if (inKeeperZone(p) && owner !== p && !ball.held && dist2(p, ball) < 320) return 'keeper';
+  return 'swing';
+}
+function drawArms(p, s, dir, swing) {
+  const mode = armMode(p), o = p === me ? cpu : me;
+  let hands;
+  if (mode === 'hold') hands = [[dir * 12, -34], [dir * 12, -28]];
+  else if (mode === 'push') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 26, -40], [-sg * 4, -24]]; }
+  else if (mode === 'spread') hands = [[-24, -46], [24, -46]];
+  else if (mode === 'keeper') hands = [[-14, -64], [14, -64]];
+  else hands = [[swing * 0.8, -24], [-swing * 0.8, -24]];
+  for (const [hx, hy] of hands) {
+    ctx.strokeStyle = p.col; ctx.lineWidth = 5 * s;
+    ctx.beginPath(); ctx.moveTo(0, -40 * s); ctx.lineTo(hx * s, hy * s); ctx.stroke();
+    ctx.fillStyle = '#f2c79b';
+    ctx.beginPath(); ctx.arc(hx * s, hy * s, 3.6 * s, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.strokeStyle = '#222';
 }
 
 function drawArrow(p) {
@@ -710,7 +824,9 @@ function render() {
     ctx.strokeText(msg, W / 2, H * 0.42); ctx.fillText(msg, W / 2, H * 0.42);
   }
   if (playing()) {
-    drawButton(btnK, aim.active, aim.active ? aimShakeFrac() : 0); drawButton(btnT, me.slide > 0, 0);
+    const kick = canKickNow() || aim.active;
+    btnK.label = kick ? 'KICK' : 'TACKLE'; btnK.col = kick ? '#ffd23f' : '#ff8c42';
+    drawButton(btnK, aim.active || me.slide > 0, aim.active ? aimShakeFrac() : 0);
     drawSprintButton(); drawJoystick();
   }
 }
