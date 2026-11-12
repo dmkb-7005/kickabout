@@ -33,7 +33,7 @@ const DAZZLE_TIME = 1.0, DAZZLE_IMMUNE = 2.5;
 const POST_R = 4;
 
 // --- goalkeeper zone (goal area) ---
-const GA_DEPTH = 130, GA_HALF = 95;      // size of the goal area in front of each goal
+const GA_DEPTH = 100, GA_HALF = 130;      // size of the goal area in front of each goal
 const CATCH_SPEED = 480;                // slower shots than this are caught
 const PARRY_SPEED = 720;                // shots up to this speed can be parried (60% chance)
 const KEEP_REACH = 46, HOLD_T = 0.9;    // reach of the hands; how long the keeper holds the ball
