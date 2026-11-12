@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no,viewport-fit=cover">
+<meta name="theme-color" content="#1e7a34">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<title>Kick-About</title>
+<style>
+  html,body{margin:0;height:100%;background:#0d3b1a;overflow:hidden;touch-action:none;
+    -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;overscroll-behavior:none}
+  canvas{display:block;width:100vw;height:100vh;touch-action:none}
+  .overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    color:#fff;font:600 22px system-ui,sans-serif;text-align:center}
+  #start{background:rgba(0,0,0,.55)}
+  #start h1{font-size:52px;margin:0 0 10px}
+  #start p{opacity:.85;margin:4px}
+  #start button{font:700 32px system-ui,sans-serif;padding:18px 56px;border-radius:40px;border:0;
+    background:#ffd23f;color:#222;margin-top:26px}
+  #rotate{display:none;background:#0d3b1a;font-size:28px}
+  @media (orientation:portrait){#rotate{display:flex}}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="start" class="overlay">
+  <h1>⚽ Kick-About</h1>
+  <p>Right hand: hold &amp; drag – the further away, the faster you run</p>
+  <p>Left hand: KICK (hold for a harder shot) · TACKLE</p>
+  <button id="go">Play</button>
+</div>
+<div id="rotate" class="overlay">Please turn the tablet sideways ↻</div>
+<script src="game.js"></script>
+<script>
+  if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
+</script>
+</body>
+</html>
