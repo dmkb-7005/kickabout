@@ -123,7 +123,9 @@ function setupKickoff(humanKicks) {
   const sm = me ? Math.min(1, me.stam + 0.3) : 1, sc = cpu ? Math.min(1, cpu.stam + 0.3) : 1;
   const c = FW / 2;
   me = mkPlayer(humanKicks ? c - PR - BR - 2 : c - 230, '#e63946', false, sm);
+  me.shorts = '#1f5a2e';                        // dark green shorts
   cpu = mkPlayer(humanKicks ? c + 230 : c + PR + BR + 2, '#1d6fe0', true, sc);
+  cpu.shorts = '#d8c39a';                       // beige shorts
   ball = { x: c, d: FD / 2, z: 0, vx: 0, vd: 0, vz: 0, held: null, holdT: 0 };
   owner = null; aim.active = false; feint.tokens.length = 0;
   kicker = humanKicks ? me : cpu; kickoffLock = true; kickoffT = 0;
@@ -540,7 +542,8 @@ function separate() {
 
 function updateCamera(dt) {
   const halfNear = (W / 2) / (F / D0);
-  const lo = -GOAL_DEPTH - 70 + halfNear, hi = FW + GOAL_DEPTH + 70 - halfNear;
+  const extra = themeReady ? 110 : 0;          // backyard: show a bit more of the yard beside the goals
+  const lo = -GOAL_DEPTH - 70 - extra + halfNear, hi = FW + GOAL_DEPTH + 70 + extra - halfNear;
   const target = clamp(ball.x * 0.75 + me.x * 0.25, lo, hi);
   camX += ((lo > hi ? FW / 2 : target) - camX) * Math.min(1, dt * 3);
 }
@@ -644,16 +647,17 @@ function line(x1, d1, x2, d2) {
 const THEME_DIR = 'theme/backyard/';
 const TH = {};
 let groundPieces = null, skyCol = '#8cc8ee';
-const GX0 = -420, GX1 = FW + 420, GD0 = -45, GD1 = FD + 45;   // world area baked into the ground texture
+const GX0 = -620, GX1 = FW + 420, GD0 = -45, GD1 = FD + 45;   // world area baked into the ground texture
 const GPU = 2.8, GPIECES = 2;                                  // texture px per world unit; split to stay < 4096 px
 const TILE_WORLD = 170;                                        // world units covered by one gravel tile
 const WALL_D = -40, WALL_H = 62;                               // the stone wall stands just behind the far touchline
 const PROPS = [                                                // [image, x, d, height in world units]
-  ['bush', 790, -27, 72], ['bush', 905, -30, 56], ['tree', FW + 150, -22, 240], ['palm', -175, 105, 88],
-];
+  ['car', -300, 12, 165], ['bush', 790, -27, 72], ['bush', 905, -30, 56], ['tree', FW + 150, -22, 240],
+  ['palm', -175, 105, 88], ['house', -262, 385, 300],
+];                                                             // keep sorted far → near (drawn in this order)
 (function loadTheme() {
   const req = { backdrop: 'backdrop.jpg', wall: 'wall.jpg', grey: 'gravel_grey.jpg', brown: 'gravel_brown.jpg' };
-  const opt = { palm: 'prop_palm.png', bush: 'prop_bush.png', tree: 'prop_tree.png' };
+  const opt = { palm: 'prop_palm.png', bush: 'prop_bush.png', tree: 'prop_tree.png', house: 'prop_house.png', car: 'prop_car.png' };
   let left = Object.keys(req).length, failed = false;
   for (const [k, f] of Object.entries(req)) {
     const im = new Image();
@@ -880,11 +884,20 @@ function drawPlayer(p) {
   ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s; ctx.lineCap = 'round';
   if (sprinting(p) && p.spd > 30) drawWheel(s, p.run * 3, dir);
   else {
-    ctx.beginPath(); ctx.moveTo(-3 * s, -16 * s); ctx.lineTo((-3 + swing) * s, 0);
-    ctx.moveTo(3 * s, -16 * s); ctx.lineTo((3 - swing) * s, 0); ctx.stroke();
+    for (const [hx, fx] of [[-3, -3 + swing], [3, 3 - swing]]) {           // long white stockings
+      ctx.strokeStyle = '#3a3a3a'; ctx.lineWidth = 6.5 * s;
+      ctx.beginPath(); ctx.moveTo(hx * s, -14 * s); ctx.lineTo(fx * s, -1 * s); ctx.stroke();
+      ctx.strokeStyle = '#f7f7f2'; ctx.lineWidth = 4.3 * s;
+      ctx.beginPath(); ctx.moveTo(hx * s, -14 * s); ctx.lineTo(fx * s, -1 * s); ctx.stroke();
+      ctx.fillStyle = '#222';                                               // boots
+      ctx.beginPath(); ctx.ellipse((fx + dir * 1.5) * s, -0.5 * s, 4.2 * s, 2.4 * s, 0, 0, Math.PI * 2); ctx.fill();
+    }
   }
   ctx.fillStyle = p.col;
-  ctx.beginPath(); ctx.roundRect((-9 + lean * 0.4) * s, -38 * s, 18 * s, 23 * s, 5 * s); ctx.fill();
+  ctx.beginPath(); ctx.roundRect((-9 + lean * 0.4) * s, -38 * s, 18 * s, 20 * s, 5 * s); ctx.fill();
+  ctx.fillStyle = p.shorts || '#333'; ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1.2 * s;   // shorts
+  ctx.beginPath(); ctx.roundRect((-9.5 + lean * 0.3) * s, -21 * s, 19 * s, 9 * s, 3 * s); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s;
   drawArms(p, s, dir, swing);
   drawHead(p, s, dir, lean);
   ctx.restore();
@@ -954,12 +967,12 @@ function drawWheel(s, rot, dir) {
   ctx.save(); ctx.lineCap = 'round';
   for (let i = 0; i < 6; i++) {                                   // smeared leg loops
     const a = rot + i * 1.05;
-    ctx.strokeStyle = `rgba(30,30,30,${0.42 - i * 0.05})`; ctx.lineWidth = (4.5 - i * 0.4) * s;
+    ctx.strokeStyle = i === 0 ? 'rgba(60,60,60,.5)' : `rgba(250,250,245,${0.75 - i * 0.1})`; ctx.lineWidth = (i === 0 ? 6 : 4.5 - i * 0.4) * s;
     ctx.beginPath();
     ctx.ellipse(Math.cos(a) * 3 * s, cy + Math.sin(a) * 2 * s, (10 + i) * s, (7 + i * 0.5) * s, -dir * 0.35, 0, Math.PI * 2);
     ctx.stroke();
   }
-  ctx.strokeStyle = 'rgba(210,40,40,.55)'; ctx.lineWidth = 3.5 * s;  // shoe smears
+  ctx.strokeStyle = 'rgba(25,25,25,.6)'; ctx.lineWidth = 3.5 * s;  // boot smears
   for (const off of [0, Math.PI]) {
     const a = (rot % (Math.PI * 2)) + off;
     ctx.beginPath(); ctx.ellipse(0, cy + 2 * s, 12 * s, 8 * s, -dir * 0.35, a, a + 1.3); ctx.stroke();
