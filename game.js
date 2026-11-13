@@ -101,6 +101,7 @@ function setMood(p, m, t) { p.mood = m; p.moodT = t; }
 function moodOf(p) {
   if (p.stun > 0 || p.dazzle > 0) return 'dizzy';
   if (p.moodT > 0) return p.mood;
+  if (p.glasses != null) return 'celebrate';
   if ((p === me && aim.active) || p.slide > 0 || p.kickT > 0 || (sprinting(p) && p.spd > 30)) return 'determined';
   return 'neutral';
 }
@@ -547,12 +548,13 @@ function separate() {
 // =====================================================================
 //  Goal celebrations → fist bump → walk back → ball drops from the sky
 // =====================================================================
-const CPU_MOVES = ['armsUp', 'airplane', 'jumpPunch', 'vArms', 'basic'];
+const CPU_MOVES = ['armsUp', 'shades', 'jumpPunch', 'vArms', 'basic'];
+const SUNGLASSES = new Image(); SUNGLASSES.src = 'img/sunglasses.png';
 const HUMAN_MOVES = ['toorRun', 'ronaldo', 'kneeSlide', 'runHouse', 'basic'];
-let celeb = null;
+let celeb = null, lastMsg = '', msgStart = 0;
 
 function say(p, txt, t) { p.say = { txt, t }; }
-function resetPose(p) { p.pose = null; p.legs = null; p.spin = null; p.free = false; p.hidden = false; p.kneeSlide = false; p.boost = 1; }
+function resetPose(p) { p.cool = false; p.pose = null; p.legs = null; p.spin = null; p.free = false; p.hidden = false; p.kneeSlide = false; p.boost = 1; }
 function goTo(p, tx, td, frac, dt) {
   const dx = tx - p.x, dd = td - p.d, l = Math.hypot(dx, dd);
   if (l > 3) {
@@ -595,14 +597,11 @@ function partyMove(p, T, k, dt) {
     case 'vArms':                                               // CPU: arms in a V
       p.pose = 'v'; accelTo(p, 0, 0, dt);
       return T > 2.4;
-    case 'airplane': {                                          // CPU: figure of 8 with "wings"
-      if (!k.init) { k.init = 1; p.boost = 1.25; k.cx = clamp(p.x, 260, FW - 260); k.cd = FD / 2; k.th = 0; k.go = false; p.pose = 'plane'; }
-      if (!k.go) { if (goTo(p, k.cx, k.cd, 0.8, dt) < 25 || T > 2) k.go = true; return false; }
-      k.th += dt * (Math.PI * 2 / 5);
-      const th = k.th + 0.35;
-      goTo(p, k.cx + 210 * Math.sin(th), k.cd + 110 * Math.sin(2 * th), 1, dt);
-      return k.th >= Math.PI * 2;
-    }
+    case 'shades':                                              // CPU: puts on sunglasses, strolls to the centre looking important
+      if (!k.init) { k.init = 1; p.glasses = 0; p.pose = 'glasses'; accelTo(p, 0, 0, dt); }
+      if (p.glasses < 1) { p.glasses = Math.min(1, p.glasses + dt / 0.9); accelTo(p, 0, 0, dt * 2); if (p.glasses >= 1) { p.pose = null; k.t0 = T; } return false; }
+      p.cool = true;
+      return goTo(p, FW / 2 + (p.ai ? 90 : -90), FD / 2, 0.26, dt) < 20 || T - k.t0 > 4.5;
     case 'jumpPunch':                                           // CPU: run a few metres, jump, swing the arm
       if (!k.init) { k.init = 1; k.tx = clamp(p.x + toCentre * 170, 60, FW - 60); k.td = clamp(p.d + 30, 60, FD - 60); k.st = 0; }
       if (k.st === 0) { if (goTo(p, k.tx, k.td, 1, dt) < 30 || T > 2) { k.st = 1; jump(p, 400); p.pose = 'punch'; k.tl = T; } return false; }
@@ -675,7 +674,8 @@ function updateCelebration(dt) {
     if (partyMove(sc, C.t, C.k, dt)) { resetPose(sc); sc.z = 0; C.stage = 'walk'; C.t = 0; }
   } else if (C.stage === 'walk') {
     // both head for the centre spot, each stopping just inside his own half
-    const c = FW / 2, a = goTo(me, c - 22, FD / 2, 0.6, dt), b = goTo(cpu, c + 22, FD / 2, 0.6, dt);
+    const c = FW / 2, arm = 32;                                  // one arm length each side of the line
+    const a = goTo(me, c - arm, FD / 2, 0.6, dt), b = goTo(cpu, c + arm, FD / 2, 0.6, dt);
     if ((a < 10 && b < 10) || C.t > 8) {
       for (const p of [me, cpu]) { const o = p === me ? cpu : me; p.hx = Math.sign(o.x - p.x) || 1; p.pose = 'fist'; p.vx = p.vd = 0; }
       popup('👊', c, FD / 2, '#fff'); beep(330, 0.06, 'square', 0.2); beep(260, 0.1, 'triangle', 0.2);
@@ -1062,7 +1062,7 @@ function drawPlayer(p) {
   if (p.slide > 0) ctx.rotate(dir * 1.1);
   if (p.spin != null) ctx.scale(Math.abs(p.spin) < 0.12 ? 0.12 * Math.sign(p.spin || 1) : p.spin, 1);   // half turn in the air
   if (p.legs === 'kneel') ctx.translate(0, 11 * s);
-  const swing = p.spd > 20 ? Math.sin(p.run) * Math.min(8, p.spd / 30) : 0;
+  const swing = p.spd > 20 ? Math.sin(p.run) * Math.min(p.cool ? 3 : 8, p.spd / 30) : 0;
   const lean = (1 - p.stam) * 4 * dir;
   ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s; ctx.lineCap = 'round';
   if (sprinting(p) && p.spd > 30) drawWheel(s, p.run * 3, dir);
@@ -1101,6 +1101,21 @@ function drawPlayer(p) {
   }
 }
 
+// Sunglasses: p.glasses goes 0 → 1 while they travel from the hand to the eyes.
+function glassesPos(p, s, dir) {
+  const lean = (1 - p.stam) * 4 * dir, bob = p.spd > 20 ? Math.abs(Math.sin(p.run)) * 1.5 : 0, bottom = (-32 - bob) * s;
+  const skin = SKINS[p.ai ? 'cpu' : 'human'].neutral;
+  const eye = skin ? { x: lean * s, y: bottom - HEAD_H * s * (1 - 0.468), w: HEAD_W * s * 0.675 }
+                   : { x: (lean + dir * 3) * s, y: bottom - 25 * s - 2 * s, w: 40 * s };
+  const t = clamp(p.glasses || 0, 0, 1), e = t * t * (3 - 2 * t);
+  const from = { x: dir * 34 * s, y: -30 * s, w: eye.w * 0.6 };              // starts at hip height in the hand
+  return { x: from.x + (eye.x - from.x) * e, y: from.y + (eye.y - from.y) * e, w: from.w + (eye.w - from.w) * e };
+}
+function drawGlasses(p, s, dir) {
+  if (p.glasses == null || !SUNGLASSES.complete || !SUNGLASSES.naturalWidth) return;
+  const g = glassesPos(p, s, dir), h = g.w * SUNGLASSES.height / SUNGLASSES.width;
+  ctx.drawImage(SUNGLASSES, g.x - g.w / 2, g.y - h / 2, g.w, h);
+}
 function drawHead(p, s, dir, lean) {
   const sk = SKINS[p.ai ? 'cpu' : 'human'], mood = moodOf(p), img = sk[mood] || sk.neutral || null;
   const bob = p.spd > 20 ? Math.abs(Math.sin(p.run)) * 1.5 : 0;
@@ -1108,6 +1123,7 @@ function drawHead(p, s, dir, lean) {
   if (img) {
     const w = HEAD_W * s, h = HEAD_H * s;
     ctx.drawImage(img, cx - w / 2, bottom - h, w, h);
+    drawGlasses(p, s, dir);
     return;
   }
   // drawn cartoon head (CPU, or the human when no skin is present)
@@ -1143,6 +1159,7 @@ function drawHead(p, s, dir, lean) {
   else if (mood === 'determined') { ctx.moveTo(fx - 5 * s, my); ctx.lineTo(fx + 5 * s, my); ctx.stroke(); }
   else if (mood === 'cheeky') { ctx.arc(fx, my - 2 * s, 5 * s, 0.2, Math.PI - 0.6); ctx.stroke(); }
   else { ctx.arc(fx, my - 3 * s, 5 * s, 0.4, Math.PI - 0.4); ctx.stroke(); }
+  drawGlasses(p, s, dir);
 }
 
 // Cartoon blur-loop legs while sprinting (classic "legs become a whirl" effect)
@@ -1208,6 +1225,7 @@ function drawArms(p, s, dir, swing) {
   const mode = p.pose || armMode(p), o = p === me ? cpu : me;
   let hands;
   if (POSE_HANDS[mode]) hands = POSE_HANDS[mode](dir);
+  else if (mode === 'glasses') { const g = glassesPos(p, s, dir); hands = [[g.x / s - dir * 8, g.y / s + 4], [-dir * 4, -20]]; }
   else if (mode === 'fist') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 32, -30], [-sg * 4, -20]]; }
   else if (mode === 'hold') hands = [[dir * 12, -30], [dir * 12, -25]];
   else if (mode === 'push') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 21, -27], [-sg * 4, -20]]; }
@@ -1286,9 +1304,14 @@ function render() {
   ctx.fillStyle = '#ff7b84'; ctx.fillText('YOU', W / 2 - 95, 36);
   ctx.fillStyle = '#7fb2ff'; ctx.fillText('CPU', W / 2 + 95, 36);
   ctx.fillStyle = '#fff'; ctx.fillText(`${score[0]} : ${score[1]}`, W / 2, 36);
+  if (msg !== lastMsg) { lastMsg = msg; msgStart = performance.now(); }
   if (msg) {
-    ctx.font = '900 68px system-ui'; ctx.lineWidth = 8; ctx.strokeStyle = '#0d3b1a';
-    ctx.strokeText(msg, W / 2, H * 0.42); ctx.fillText(msg, W / 2, H * 0.42);
+    // pops up from the bottom edge with a little overshoot and stays low, so faces stay visible
+    const t = Math.min(1, (performance.now() - msgStart) / 500), c1 = 1.7, c3 = c1 + 1;
+    const e = 1 + c3 * Math.pow(t - 1, 3) + c1 * Math.pow(t - 1, 2);         // ease-out-back
+    const y = H + 50 - (H * 0.16 + 50) * e;
+    ctx.font = '900 58px system-ui'; ctx.lineWidth = 8; ctx.strokeStyle = '#0d3b1a'; ctx.fillStyle = '#fff';
+    ctx.strokeText(msg, W / 2, y); ctx.fillText(msg, W / 2, y);
   }
   drawBubbles();                                  // after the HUD so the scoreboard never covers them
   if (phase === 'celebrate' && celeb && (celeb.stage === 'party' || celeb.stage === 'walk')) {
