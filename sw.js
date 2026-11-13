@@ -1,5 +1,5 @@
 // Network-first while you iterate; falls back to cache when offline.
-const CACHE = 'kickabout-v10';
+const CACHE = 'kickabout-v11';
 const ASSETS = ['./', 'index.html', 'game.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png',
   ...['neutral', 'determined', 'celebrate', 'shocked', 'dizzy', 'sad', 'cheeky'].map(n => `skin/${n}.png`)];
 

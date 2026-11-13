@@ -90,8 +90,11 @@ const dist2 = (a, b) => Math.hypot(a.x - b.x, a.d - b.d);
 // ---------- Skins (big cartoon heads) ----------
 // Human player's head comes from skin/<expression>.png; if missing, a drawn cartoon face is used.
 const EXPRESSIONS = ['neutral', 'determined', 'celebrate', 'shocked', 'dizzy', 'sad', 'cheeky'];
-const SKIN = {};
-for (const n of EXPRESSIONS) { const im = new Image(); im.onload = () => { SKIN[n] = im; }; im.src = `skin/${n}.png`; }
+// skin/        -> CPU player (the uncle)
+// skin-nephew/ -> human player (optional; drawn cartoon face if missing)
+const SKINS = { cpu: {}, human: {} };
+for (const [who, dir] of [['cpu', 'skin/'], ['human', 'skin-nephew/']])
+  for (const n of EXPRESSIONS) { const im = new Image(); im.onload = () => { SKINS[who][n] = im; }; im.src = dir + n + '.png'; }
 const HEAD_W = 52, HEAD_H = 73;          // world units – deliberately big so expressions read on a tablet
 
 function setMood(p, m, t) { p.mood = m; p.moodT = t; }
@@ -542,7 +545,7 @@ function separate() {
 
 function updateCamera(dt) {
   const halfNear = (W / 2) / (F / D0);
-  const extra = themeReady ? 110 : 0;          // backyard: show a bit more of the yard beside the goals
+  const extra = themeReady ? 160 : 0;          // backyard: show a bit more of the yard beside the goals
   const lo = -GOAL_DEPTH - 70 - extra + halfNear, hi = FW + GOAL_DEPTH + 70 + extra - halfNear;
   const target = clamp(ball.x * 0.75 + me.x * 0.25, lo, hi);
   camX += ((lo > hi ? FW / 2 : target) - camX) * Math.min(1, dt * 3);
@@ -652,8 +655,8 @@ const GPU = 2.8, GPIECES = 2;                                  // texture px per
 const TILE_WORLD = 170;                                        // world units covered by one gravel tile
 const WALL_D = -40, WALL_H = 62;                               // the stone wall stands just behind the far touchline
 const PROPS = [                                                // [image, x, d, height in world units]
-  ['car', -300, 12, 165], ['bush', 790, -27, 72], ['bush', 905, -30, 56], ['tree', FW + 150, -22, 240],
-  ['palm', -175, 105, 88], ['house', -262, 385, 300],
+  ['car', -300, 40, 165], ['bush', 790, -27, 72], ['bush', 905, -30, 56], ['tree', FW + 150, -22, 240],
+  ['palm', -175, 105, 88], ['house', -330, 112, 300],
 ];                                                             // keep sorted far → near (drawn in this order)
 (function loadTheme() {
   const req = { backdrop: 'backdrop.jpg', wall: 'wall.jpg', grey: 'gravel_grey.jpg', brown: 'gravel_brown.jpg' };
@@ -706,6 +709,8 @@ function buildTheme() {
     g.fillStyle = sh; g.fillRect(ox, 0, pw, 30 * GPU);
     groundPieces.push({ c, x0: GX0 + ox / GPU, x1: GX0 + (ox + pw) / GPU });
   }
+  // GPU-resident, immutable copies draw faster (especially on tablets)
+  if (window.createImageBitmap) for (const pc of groundPieces) createImageBitmap(pc.c).then(bm => { pc.c = bm; }).catch(() => {});
   try {                                                                       // sky colour = top of the backdrop
     const t = document.createElement('canvas'); t.width = t.height = 1;
     const tg = t.getContext('2d'); tg.drawImage(TH.backdrop, 0, 0, 40, 4, 0, 0, 1, 1);
@@ -716,16 +721,18 @@ function buildTheme() {
 
 // Ground in perspective: the baked top-down texture is drawn in thin horizontal strips.
 function drawGroundTex() {
+  // Compute the strips once, then draw them grouped by texture piece: switching between the two big
+  // textures for every strip made the GPU thrash (laggy whenever the view spanned both pieces).
   const dAt = y => D0 + FD - A / Math.max(1, y - HY);
-  const yTop = Math.max(0, Math.floor(P(0, GD0)[1])), STEP = 3;
+  const yTop = Math.max(0, Math.floor(P(0, GD0)[1])), STEP = 4, strips = [];
   for (let y = yTop; y < H; y += STEP) {
     const y1 = Math.min(H, y + STEP);
     const da = Math.max(GD0, dAt(y)), db = Math.min(GD1, dAt(y1));
-    if (db <= da) continue;
-    const k = F / camDist((da + db) / 2);
-    const xa = camX - (W / 2) / k, xb = camX + (W / 2) / k;
-    for (const pc of groundPieces) {
-      const ix0 = Math.max(xa, pc.x0), ix1 = Math.min(xb, pc.x1);
+    if (db > da) strips.push([y, y1, da, db, F / camDist((da + db) / 2)]);
+  }
+  for (const pc of groundPieces) {
+    for (const [y, y1, da, db, k] of strips) {
+      const ix0 = Math.max(camX - (W / 2) / k, pc.x0), ix1 = Math.min(camX + (W / 2) / k, pc.x1);
       if (ix1 <= ix0) continue;
       const dx0 = W / 2 + (ix0 - camX) * k, dx1 = W / 2 + (ix1 - camX) * k;
       ctx.drawImage(pc.c, (ix0 - pc.x0) * GPU, (da - GD0) * GPU, (ix1 - ix0) * GPU, Math.max(0.5, (db - da) * GPU),
@@ -918,7 +925,7 @@ function drawPlayer(p) {
 }
 
 function drawHead(p, s, dir, lean) {
-  const mood = moodOf(p), img = !p.ai && SKIN[mood] ? SKIN[mood] : (!p.ai ? SKIN.neutral : null);
+  const sk = SKINS[p.ai ? 'cpu' : 'human'], mood = moodOf(p), img = sk[mood] || sk.neutral || null;
   const bob = p.spd > 20 ? Math.abs(Math.sin(p.run)) * 1.5 : 0;
   const cx = lean * s, bottom = (-32 - bob) * s;              // neck sits on the shoulders
   if (img) {
@@ -1145,12 +1152,15 @@ function drawSprintButton() {
 }
 
 // ---------- Loop ----------
-let last = performance.now();
+let last = performance.now(), fpsAcc = 16;
+const SHOW_FPS = /[?&]fps/.test(location.search);
 function frame(t) {
-  const dt = Math.min(1 / 30, (t - last) / 1000); last = t;
+  const raw = t - last, dt = Math.min(1 / 30, raw / 1000); last = t;
+  if (SHOW_FPS) { fpsAcc = fpsAcc * 0.95 + Math.max(1, raw) * 0.05; }
   update(dt * (aim.active ? SLOWMO : 1));
   for (let i = popups.length - 1; i >= 0; i--) if ((popups[i].t -= dt) <= 0) popups.splice(i, 1);
   render();
+  if (SHOW_FPS) { ctx.fillStyle = '#fff'; ctx.font = '700 16px system-ui'; ctx.textAlign = 'left'; ctx.fillText(`${Math.round(1000 / fpsAcc)} fps`, 12, 22); }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
