@@ -38,7 +38,7 @@ const GA_DEPTH = 75, GA_HALF = 100;     // goal area (6-yard box), drawn only
 const PEN_SPOT = 125;                   // penalty spot distance from the goal line
 const CATCH_SPEED = 680;                // slower shots than this are caught
 const PARRY_SPEED = 920;                // shots up to this speed can be parried (60% chance)
-const KEEP_REACH = 60, HOLD_T = 2.0;    // reach of the hands; how long the keeper holds the ball
+const KEEP_REACH = 60, HOLD_T = 6.0;    // reach of the hands; how long the keeper holds the ball
 
 // --- movement / fatigue tuning ---
 const HUMAN_TOP = 280, AI_TOP = 255;   // top speed when fresh
