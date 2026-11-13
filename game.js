@@ -156,6 +156,7 @@ const playing = () => phase === 'play' || phase === 'ready';
 
 cv.addEventListener('pointerdown', e => {
   e.preventDefault();
+  if (phase === 'celebrate') { if (hit(btnK, e)) skipCelebration(); return; }
   if (!playing()) return;
   try { cv.setPointerCapture(e.pointerId); } catch (_) {}
   if (hit(btnK, e)) {                         // one action button: KICK with the ball, TACKLE without
@@ -431,8 +432,8 @@ function movePlayer(p, other, dt) {
     }
     if (p.slide <= 0) { p.recover = 0.4; p.vx *= 0.25; p.vd *= 0.25; }
   }
-  p.x = clamp(p.x + p.vx * dt, -20, FW + 20);
-  p.d = clamp(p.d + p.vd * dt, 0, FD);
+  p.x = p.free ? p.x + p.vx * dt : clamp(p.x + p.vx * dt, -20, FW + 20);
+  p.d = p.free ? clamp(p.d + p.vd * dt, -30, FD + 20) : clamp(p.d + p.vd * dt, 0, FD);
   p.spd = Math.hypot(p.vx, p.vd);
   if (p.spd > 20) p.hx = p.vx / p.spd;
   p.run += p.spd * dt * 0.06;
@@ -528,7 +529,7 @@ function goal(team) {
   nextHumanKicks = team === 1;                        // whoever conceded kicks off
   const won = score[team] >= MATCH_GOALS;
   msg = won ? (team === 0 ? 'YOU WIN! 🏆' : 'CPU wins – rematch?') : (team === 0 ? 'GOAL! 🎉' : 'CPU scores!');
-  phase = won ? 'over' : 'goal'; phaseT = won ? 3.5 : 2.2;
+  startCelebration(team, won);
   if (team === 0) [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => beep(f, 0.15, 'square', 0.12), i * 110));
   else beep(150, 0.4, 'sawtooth', 0.1);
 }
@@ -543,11 +544,188 @@ function separate() {
   }
 }
 
+// =====================================================================
+//  Goal celebrations → fist bump → walk back → ball drops from the sky
+// =====================================================================
+const CPU_MOVES = ['armsUp', 'airplane', 'jumpPunch', 'vArms', 'basic'];
+const HUMAN_MOVES = ['toorRun', 'ronaldo', 'kneeSlide', 'runHouse', 'basic'];
+let celeb = null;
+
+function say(p, txt, t) { p.say = { txt, t }; }
+function resetPose(p) { p.pose = null; p.legs = null; p.spin = null; p.free = false; p.hidden = false; p.kneeSlide = false; }
+function goTo(p, tx, td, frac, dt) {
+  const dx = tx - p.x, dd = td - p.d, l = Math.hypot(dx, dd);
+  if (l > 3) {
+    p.fx = dx / l; p.fd = dd / l;
+    const sp = Math.min(frac * maxSpeed(p), l * 3);
+    accelTo(p, p.fx * sp, p.fd * sp, dt);
+  } else accelTo(p, 0, 0, dt);
+  return l;
+}
+function jump(p, vz) { if ((p.z || 0) <= 0) { p.vz = vz; p.z = 0.01; } }
+const airborne = p => (p.z || 0) > 0;
+
+function startCelebration(team, won) {
+  const sc = team === 0 ? me : cpu, ot = sc === me ? cpu : me;
+  const list = sc === me ? HUMAN_MOVES : CPU_MOVES;
+  celeb = { stage: 'party', t: 0, sc, ot, won, move: list[Math.floor(Math.random() * list.length)], k: {} };
+  if (/[?&]celeb=/.test(location.search)) celeb.move = location.search.match(/celeb=(\w+)/)[1];   // testing aid
+  for (const p of [me, cpu]) { resetPose(p); p.slide = 0; p.stun = 0; p.dazzle = 0; p.recover = 0; p.z = 0; p.vz = 0; p.want = 0; }
+  setMood(sc, 'celebrate', 30); setMood(ot, 'sad', 30);
+  ball.held = null; owner = null; aim.active = false; endSprint(); ptr.kick = null;
+  phase = 'celebrate';
+}
+function skipCelebration() {
+  if (!celeb || (celeb.stage !== 'party' && celeb.stage !== 'bump')) return;
+  for (const p of [me, cpu]) { resetPose(p); p.say = null; if (p.x < -20) p.x = -20; }
+  setMood(me, 'neutral', 0); setMood(cpu, 'neutral', 0);
+  if (celeb.won) { phase = 'over'; phaseT = 2.5; return; }
+  celeb.stage = 'walk'; celeb.t = 0; msg = '';
+}
+
+// --- the scorer's party moves. Returns true when finished.
+function partyMove(p, T, k, dt) {
+  const toCentre = Math.sign(FW / 2 - p.x) || 1;
+  switch (celeb.move) {
+    case 'armsUp':                                              // CPU: arms straight up, "Jaaaaa!"
+      if (!k.init) { k.init = 1; p.pose = 'up'; say(p, 'Jaaaaa!', 2.4); }
+      accelTo(p, 0, 0, dt);
+      if ((T > 0.4 && T < 0.5) || (T > 1.3 && T < 1.4)) jump(p, 220);
+      return T > 2.8;
+    case 'vArms':                                               // CPU: arms in a V
+      p.pose = 'v'; accelTo(p, 0, 0, dt);
+      return T > 2.4;
+    case 'airplane': {                                          // CPU: figure of 8 with "wings"
+      if (!k.init) { k.init = 1; k.cx = clamp(p.x, 220, FW - 220); k.cd = FD / 2; k.th = 0; k.go = false; p.pose = 'plane'; }
+      if (!k.go) { if (goTo(p, k.cx, k.cd, 0.8, dt) < 25 || T > 2) k.go = true; return false; }
+      k.th += dt * (Math.PI * 2 / 4.5);
+      const th = k.th + 0.35;
+      goTo(p, k.cx + 160 * Math.sin(th), k.cd + 90 * Math.sin(2 * th), 0.95, dt);
+      return k.th >= Math.PI * 2;
+    }
+    case 'jumpPunch':                                           // CPU: run a few metres, jump, swing the arm
+      if (!k.init) { k.init = 1; k.tx = clamp(p.x + toCentre * 170, 60, FW - 60); k.td = clamp(p.d + 30, 60, FD - 60); k.st = 0; }
+      if (k.st === 0) { if (goTo(p, k.tx, k.td, 1, dt) < 30 || T > 2) { k.st = 1; jump(p, 400); p.pose = 'punch'; k.tl = T; } return false; }
+      accelTo(p, 0, 0, dt * 0.5);
+      if (k.st === 1 && !airborne(p)) { k.st = 2; k.tl = T; }
+      return k.st === 2 && T - k.tl > 0.9;
+    case 'toorRun':                                             // human: "TOOOOR!" and run around wildly
+      if (!k.init) { k.init = 1; say(p, 'TOOOOR!', 3); p.pose = 'up'; k.next = 0; }
+      if (T > k.next) { k.next = T + 0.55 + Math.random() * 0.3; k.tx = clamp(p.x + (Math.random() - 0.5) * 360, 60, FW - 60); k.td = 40 + Math.random() * (FD - 80); }
+      goTo(p, k.tx, k.td, 1, dt);
+      return T > 3.4;
+    case 'ronaldo':                                             // human: sprint, jump, turn 180° in the air, land in the pose
+      if (!k.init) { k.init = 1; k.st = 0; k.tx = clamp(p.x + toCentre * 130, 60, FW - 60); k.td = clamp(p.d + 90, 60, FD - 30); }
+      if (k.st === 0) { if (goTo(p, k.tx, k.td, 1, dt) < 30 || T > 1.4) { k.st = 1; jump(p, 430); k.air = 2 * 430 / GRAVITY; k.t0 = T; k.dir0 = p.hx >= 0 ? 1 : -1; } return false; }
+      if (k.st === 1) {
+        accelTo(p, 0, 0, dt * 0.6);
+        const pr = clamp((T - k.t0) / k.air, 0, 1);
+        p.spin = Math.cos(pr * Math.PI);                         // 1 → -1 : the half turn
+        if (!airborne(p) && T - k.t0 > 0.2) { k.st = 2; k.tl = T; p.spin = null; p.hx = -k.dir0; p.vx = p.vd = 0; p.pose = 'siu'; p.legs = 'apart'; }
+        return false;
+      }
+      accelTo(p, 0, 0, dt * 3);
+      return T - k.tl > 1.8;
+    case 'kneeSlide':                                           // human: sprint, jump, slide on the knees
+      if (!k.init) { k.init = 1; k.st = 0; k.tx = clamp(p.x + toCentre * 260, 60, FW - 60); k.td = clamp(p.d + 40, 60, FD - 40); }
+      if (k.st === 0) { goTo(p, k.tx, k.td, 1, dt); if (T > 0.9) { k.st = 1; jump(p, 220); } return false; }
+      if (k.st === 1) { if (!airborne(p)) { k.st = 2; k.tl = T; p.legs = 'kneel'; p.pose = 'v'; p.kneeSlide = true;
+          const sp = Math.max(260, p.spd); p.vx = p.fx * sp; p.vd = p.fd * sp; } return false; }
+      if (p.spd < 8) { p.vx = p.vd = 0; if (!k.stopT) k.stopT = T; }
+      return k.stopT && T - k.stopT > 1.2;
+    case 'runHouse': {                                          // human: run behind the house shouting for Mum
+      if (!k.init) { k.init = 1; k.i = 0; p.free = true; p.pose = 'up';
+        say(p, 'Ma! Maaaaa! Tor! Tooor!', 4.5);
+        k.path = [[20, 72], [-200, 70], [-445, 80]]; }
+      if (k.i < k.path.length) {
+        const [tx, td] = k.path[k.i];
+        if (goTo(p, tx, td, 1, dt) < 22) k.i++;
+        if (k.i === k.path.length) { k.hideT = T; p.hidden = true; }
+        return false;
+      }
+      accelTo(p, 0, 0, dt);
+      if (T - k.hideT < 1.6) return false;
+      p.hidden = false;                                          // comes back for the fist bump
+      if (!k.back) { k.back = 1; k.j = 0; k.path2 = [[-200, 70], [20, 72]]; p.pose = null; }
+      if (k.j < k.path2.length) { const [tx, td] = k.path2[k.j]; if (goTo(p, tx, td, 0.7, dt) < 22) k.j++; return false; }
+      p.free = false; return true;
+    }
+    default:                                                    // 'basic' – the original little celebration
+      p.pose = 'v'; accelTo(p, 0, 0, dt);
+      if ((T > 0.3 && T < 0.4) || (T > 1.0 && T < 1.1)) jump(p, 200);
+      return T > 2.2;
+  }
+}
+
+function kickoffSpots() {
+  const c = FW / 2, near = PR + BR + 2;
+  return nextHumanKicks ? { me: [c - near, FD / 2], cpu: [c + 230, FD / 2] } : { me: [c - 230, FD / 2], cpu: [c + near, FD / 2] };
+}
+
+function updateCelebration(dt) {
+  const C = celeb, sc = C.sc, ot = C.ot;
+  C.t += dt;
+  // vertical motion (jumps)
+  for (const p of [me, cpu]) {
+    if (airborne(p) || p.vz > 0) { p.vz -= GRAVITY * dt; p.z += p.vz * dt; if (p.z <= 0) { p.z = 0; p.vz = 0; } }
+    if (p.kneeSlide) { const f = Math.exp(-1.3 * dt); p.vx *= f; p.vd *= f; }
+  }
+  if (C.stage === 'party') {
+    if (C.t > 2.2) msg = '';
+    accelTo(ot, 0, 0, dt);                                     // the other one stands there, gutted
+    if (partyMove(sc, C.t, C.k, dt)) {
+      resetPose(sc); sc.z = 0;
+      C.stage = 'bump'; C.t = 0;
+    }
+  } else if (C.stage === 'bump') {
+    const mx = clamp((sc.x + ot.x) / 2, 40, FW - 40), md = clamp((sc.d + ot.d) / 2, 40, FD - 40);
+    const gap = dist2(sc, ot);
+    if (!C.bumped) {
+      for (const p of [sc, ot]) goTo(p, mx + (p === sc ? -1 : 1) * Math.sign(sc.x - ot.x || 1) * -20, md, 0.45, dt);
+      if (gap < PR * 2 + 18 || C.t > 6) {
+        C.bumped = C.t;
+        for (const p of [sc, ot]) { const o = p === sc ? ot : sc; p.hx = Math.sign(o.x - p.x) || 1; p.pose = 'fist'; p.vx *= 0.2; p.vd *= 0.2; }
+        popup('👊', mx, md, '#fff'); beep(330, 0.06, 'square', 0.2); beep(260, 0.1, 'triangle', 0.2);
+        setMood(sc, 'neutral', 0); setMood(ot, 'neutral', 0);
+      }
+    } else {
+      for (const p of [sc, ot]) accelTo(p, 0, 0, dt * 2);
+      if (C.t - C.bumped > 0.9) {
+        resetPose(sc); resetPose(ot);
+        if (C.won) { phase = 'over'; phaseT = 3; msg = score[0] > score[1] ? 'YOU WIN! 🏆' : 'CPU wins – rematch?'; return; }
+        C.stage = 'walk'; C.t = 0;
+      }
+    }
+  } else if (C.stage === 'walk') {
+    const sp = kickoffSpots();
+    const a = goTo(me, sp.me[0], sp.me[1], 0.55, dt), b = goTo(cpu, sp.cpu[0], sp.cpu[1], 0.55, dt);
+    if ((a < 8 && b < 8) || C.t > 7) {
+      for (const [p, q] of [[me, sp.me], [cpu, sp.cpu]]) { p.x = q[0]; p.d = q[1]; p.vx = p.vd = 0; p.hx = p === me ? 1 : -1; }
+      Object.assign(ball, { x: FW / 2, d: FD / 2, z: 420, vx: 0, vd: 0, vz: 0, held: null });
+      C.stage = 'drop'; C.t = 0;
+    }
+  } else if (C.stage === 'drop') {
+    for (const p of [me, cpu]) accelTo(p, 0, 0, dt);
+    const vz0 = ball.vz;
+    ballPhysics(dt, false);
+    if (vz0 < -150 && ball.vz > 0) beep(160, 0.08, 'triangle', 0.25);   // bounce "tok"
+    if (C.t > 0.5 && ball.z <= 0 && ball.vz === 0) { celeb = null; setupKickoff(nextHumanKicks); phaseT = 0.8; return; }
+  }
+  if (C.stage !== 'drop') ballPhysics(dt, false);
+  for (const p of [me, cpu]) {
+    if (p.say) { p.say.t -= dt; if (p.say.t <= 0) p.say = null; }
+    movePlayer(p, p === me ? cpu : me, dt);
+  }
+  if (C.stage === 'bump' || C.stage === 'walk') separate();
+}
+
 function updateCamera(dt) {
   const halfNear = (W / 2) / (F / D0);
   const extra = themeReady ? 160 : 0;          // backyard: show a bit more of the yard beside the goals
   const lo = -GOAL_DEPTH - 70 - extra + halfNear, hi = FW + GOAL_DEPTH + 70 + extra - halfNear;
-  const target = clamp(ball.x * 0.75 + me.x * 0.25, lo, hi);
+  let focus = ball.x * 0.75 + me.x * 0.25;
+  if (phase === 'celebrate' && celeb) focus = celeb.stage === 'party' ? celeb.sc.x : celeb.stage === 'drop' ? FW / 2 : (me.x + cpu.x) / 2;
+  const target = clamp(focus, lo, hi);
   camX += ((lo > hi ? FW / 2 : target) - camX) * Math.min(1, dt * 3);
 }
 
@@ -564,13 +742,14 @@ function update(dt) {
     separate(); enforceKickoff(dt); keeperCheck();
     if (ball.held) heldBall(dt); else { dribble(); ballPhysics(dt, true); }
     if (sprint.active) { sprint.t -= dt; if (sprint.t <= 0) endSprint(); }
-  } else {                                            // 'goal' or 'over': let things settle
+  } else if (phase === 'celebrate') {
+    updateCelebration(dt);
+  } else {                                            // 'over': let things settle
     for (const p of [me, cpu]) { p.slide = 0; p.want = 0; accelTo(p, 0, 0, dt); movePlayer(p, p === me ? cpu : me, dt); }
     ballPhysics(dt, false);
     phaseT -= dt;
     if (phaseT <= 0) {
-      if (phase === 'goal') setupKickoff(nextHumanKicks);
-      else { phase = 'menu'; msg = ''; document.getElementById('start').style.display = 'flex'; }
+      { phase = 'menu'; msg = ''; document.getElementById('start').style.display = 'flex'; }
     }
   }
   if (!sprint.active) sprint.cd = Math.max(0, sprint.cd - dt);
@@ -752,8 +931,10 @@ function drawBackdropAndWall() {
   const woff = ((W / 2 - camX * k) % ww + ww) % ww;
   for (let x = woff - ww; x < W; x += ww) ctx.drawImage(TH.wall, x, wallTop, ww + 0.5, WALL_H * k + 1);
 }
-function drawProps() {
+const FOREGROUND_PROPS = ['palm', 'house'];                  // drawn over the players (someone can run behind them)
+function drawProps(fg = false) {
   for (const [name, x, d, h] of PROPS) {
+    if (FOREGROUND_PROPS.includes(name) !== fg) continue;
     const img = TH[name]; if (!img) continue;
     const s = scaleAt(d), ph = h * s, pw = img.width / img.height * ph, [sx, sy] = P(x, d);
     if (sx + pw < 0 || sx - pw > W) continue;
@@ -880,16 +1061,21 @@ function drawGoalFrame(side, front) {
 }
 
 function drawPlayer(p) {
-  const [sx, sy] = P(p.x, p.d), s = scaleAt(p.d);
+  if (p.hidden) return;
+  const [sx, sy] = P(p.x, p.d), s = scaleAt(p.d), z = p.z || 0;
+  const shrink = 1 / (1 + z / 200);
   ctx.fillStyle = 'rgba(0,0,0,.25)';
-  ctx.beginPath(); ctx.ellipse(sx, sy, PR * s, PR * s * 0.45, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.save(); ctx.translate(sx, sy);
+  ctx.beginPath(); ctx.ellipse(sx, sy, PR * s * shrink, PR * s * 0.45 * shrink, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.save(); ctx.translate(sx, sy - z * s);
   const dir = p.hx >= 0 ? 1 : -1;
   if (p.slide > 0) ctx.rotate(dir * 1.1);
+  if (p.spin != null) ctx.scale(Math.abs(p.spin) < 0.12 ? 0.12 * Math.sign(p.spin || 1) : p.spin, 1);   // half turn in the air
+  if (p.legs === 'kneel') ctx.translate(0, 11 * s);
   const swing = p.spd > 20 ? Math.sin(p.run) * Math.min(8, p.spd / 30) : 0;
   const lean = (1 - p.stam) * 4 * dir;
   ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s; ctx.lineCap = 'round';
   if (sprinting(p) && p.spd > 30) drawWheel(s, p.run * 3, dir);
+  else if (p.legs === 'kneel' || p.legs === 'apart') drawSpecialLegs(p, s, dir);
   else {
     for (const [hx, fx] of [[-3, -3 + swing], [3, 3 - swing]]) {           // long white stockings
       ctx.strokeStyle = '#3a3a3a'; ctx.lineWidth = 6.5 * s;
@@ -909,7 +1095,7 @@ function drawPlayer(p) {
   drawHead(p, s, dir, lean);
   ctx.restore();
   // stamina bar above the head
-  const bw = 34 * s, by = sy - (HEAD_H + 40) * s;
+  const bw = 34 * s, by = sy - (HEAD_H + 40 + z) * s;
   ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(sx - bw / 2 - 1, by - 1, bw + 2, 6 * s + 2);
   ctx.fillStyle = p.stam > 0.5 ? '#5ad65a' : p.stam > 0.25 ? '#ffd23f' : '#ff5a4f';
   ctx.fillRect(sx - bw / 2, by, bw * p.stam, 6 * s);
@@ -1004,10 +1190,35 @@ function armMode(p) {
   if (inKeeperZone(p) && owner !== p && !ball.held && dist2(p, ball) < 320) return 'keeper';
   return 'swing';
 }
+function drawSpecialLegs(p, s, dir) {
+  const legs = p.legs === 'kneel'
+    ? [[[-3, -14], [-3 + dir * 4, -11]], [[3, -14], [3 + dir * 4, -11]]]           // thighs down to the knees (body is lowered)
+    : [[[-3, -14], [-13, -1]], [[3, -14], [13, -1]]];                                   // legs apart at ~45°
+  for (const [[ax, ay], [bx, by]] of legs) {
+    const ex = p.legs === 'kneel' ? bx - dir * 13 : bx, ey = by;                         // shins lying behind when kneeling
+    for (const [col, w] of [['#3a3a3a', 6.5], ['#f7f7f2', 4.3]]) {
+      ctx.strokeStyle = col; ctx.lineWidth = w * s;
+      ctx.beginPath(); ctx.moveTo(ax * s, ay * s); ctx.lineTo(bx * s, by * s);
+      if (p.legs === 'kneel') ctx.lineTo(ex * s, ey * s);
+      ctx.stroke();
+    }
+    ctx.fillStyle = '#222';
+    ctx.beginPath(); ctx.ellipse((ex + (p.legs === 'kneel' ? -dir * 2 : 0)) * s, (ey - 0.5) * s, 4.2 * s, 2.4 * s, 0, 0, Math.PI * 2); ctx.fill();
+  }
+}
+const POSE_HANDS = {
+  up: d => [[-27, -96], [27, -96]],            // long cartoon arms so they show beside the big head
+  v: d => [[-44, -82], [44, -82]],
+  plane: d => [[-28, -36], [28, -33]],
+  punch: d => [[d * 26, -100], [-d * 9, -22]],
+  siu: d => [[-19, -17], [19, -17]],
+};
 function drawArms(p, s, dir, swing) {
-  const mode = armMode(p), o = p === me ? cpu : me;
+  const mode = p.pose || armMode(p), o = p === me ? cpu : me;
   let hands;
-  if (mode === 'hold') hands = [[dir * 12, -30], [dir * 12, -25]];
+  if (POSE_HANDS[mode]) hands = POSE_HANDS[mode](dir);
+  else if (mode === 'fist') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 25, -34], [-sg * 4, -20]]; }
+  else if (mode === 'hold') hands = [[dir * 12, -30], [dir * 12, -25]];
   else if (mode === 'push') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 21, -27], [-sg * 4, -20]]; }
   else if (mode === 'spread') hands = [[-21, -27], [21, -27]];
   else if (mode === 'keeper') hands = [[-24, -34], [24, -34]];
@@ -1071,7 +1282,9 @@ function render() {
     else { if (!it.ai && !aim.active) drawArrow(it); drawPlayer(it); }
   }
   drawAim();
+  if (themeReady) drawProps(true);
   drawPopups();
+  drawBubbles();
   drawGoal(0, true); drawGoal(1, true);
 
   if (aim.active) { ctx.fillStyle = 'rgba(10,20,70,.16)'; ctx.fillRect(0, 0, W, H); }
@@ -1086,6 +1299,9 @@ function render() {
   if (msg) {
     ctx.font = '900 68px system-ui'; ctx.lineWidth = 8; ctx.strokeStyle = '#0d3b1a';
     ctx.strokeText(msg, W / 2, H * 0.42); ctx.fillText(msg, W / 2, H * 0.42);
+  }
+  if (phase === 'celebrate' && celeb && (celeb.stage === 'party' || celeb.stage === 'bump')) {
+    btnK.label = 'SKIP ▶▶'; btnK.col = '#cfd8dc'; drawButton(btnK, false, 0);
   }
   if (playing()) {
     const kick = canKickNow() || aim.active;
@@ -1107,6 +1323,25 @@ function drawAim() {
   const r = 10 * scaleAt(ball.d + ad * len);
   ctx.beginPath(); ctx.ellipse(en[0], en[1], r, r * 0.5, 0, 0, Math.PI * 2); ctx.stroke();
   ctx.restore();
+}
+
+function drawBubbles() {
+  for (const p of [me, cpu]) {
+    if (!p || !p.say) continue;
+    const [sx, sy] = P(p.x, p.d), s = scaleAt(p.d);
+    const fs = Math.max(18, 22 * s), y = sy - ((p.z || 0) + HEAD_H + 62) * s;
+    ctx.font = `900 ${fs}px system-ui`;
+    const w = ctx.measureText(p.say.txt).width + fs * 1.1, h = fs * 1.7;
+    const bx = clamp(sx - w / 2, 8, W - w - 8);
+    ctx.globalAlpha = Math.min(1, p.say.t / 0.3);
+    ctx.fillStyle = '#fff'; ctx.strokeStyle = '#222'; ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.roundRect(bx, y - h, w, h, h / 2);
+    ctx.moveTo(clamp(sx - 8, bx + 12, bx + w - 24), y); ctx.lineTo(clamp(sx, bx + 20, bx + w - 16), y + 14); ctx.lineTo(clamp(sx + 10, bx + 28, bx + w - 8), y);
+    ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#222'; ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText(p.say.txt, bx + w / 2, y - h / 2);
+    ctx.globalAlpha = 1;
+  }
 }
 
 function drawPopups() {
@@ -1160,7 +1395,7 @@ function frame(t) {
   update(dt * (aim.active ? SLOWMO : 1));
   for (let i = popups.length - 1; i >= 0; i--) if ((popups[i].t -= dt) <= 0) popups.splice(i, 1);
   render();
-  if (SHOW_FPS) { ctx.fillStyle = '#fff'; ctx.font = '700 16px system-ui'; ctx.textAlign = 'left'; ctx.fillText(`${Math.round(1000 / fpsAcc)} fps`, 12, 22); }
+  if (SHOW_FPS) { ctx.font = '700 16px system-ui'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(6, 8, 70, 24); ctx.fillStyle = '#fff'; ctx.fillText(`${Math.round(1000 / fpsAcc)} fps`, 12, 22); }
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
