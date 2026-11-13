@@ -144,7 +144,7 @@ function setupKickoff(humanKicks) {
   cpu.calm = humanKicks ? 0 : 2.5;           // CPU starts its kick-off slowly
   sprint.active = false;
   phase = 'ready'; phaseT = 1.4;
-  msg = humanKicks ? 'Your kick-off!' : 'CPU kick-off!';
+  msg = humanKicks ? 'Dein Anstoß!' : 'Onkel hat Anstoß!';
 }
 
 // ---------- Audio ----------
@@ -158,6 +158,150 @@ function beep(f, t = 0.08, type = 'square', vol = 0.15) {
   o.connect(g).connect(AC.destination); o.start(); o.stop(AC.currentTime + t);
 }
 
+// =====================================================================
+//  Achievements ("Erfolge") – stored in the browser (localStorage)
+// =====================================================================
+const M_PER_UNIT = 14 / FW;                                   // the pitch is roughly 14 m long
+const ACH_KEY = 'kickabout.achievements.v1';
+const ACHS = [
+  { id: 'firstWin',  icon: '🏆', name: 'Erster Sieg',         desc: 'Gewinne dein erstes Spiel' },
+  { id: 'streak5',   icon: '🔥', name: '5 Siege in Folge',     desc: 'Fünf Spiele hintereinander gewinnen', prog: s => [Math.min(s.streak, 5), 5] },
+  { id: 'longGoal',  icon: '📏', name: 'Weitestes Tor',        desc: 'Dein weitestes Tor', value: s => s.bestDist ? `${s.bestDist.toFixed(1).replace('.', ',')} m` : '–' },
+  { id: 'celebs',    icon: '🎉', name: 'Jubel-Sammler',        desc: 'Alle Torjubel gezeigt', prog: s => [s.celebs.length, 5] },
+  { id: 'cleanSheet',icon: '🧱', name: 'Zu Null gewonnen',     desc: 'Gewinnen ohne Gegentor', value: s => `${s.cleanSheets}×` },
+  { id: 'trick',     icon: '🌀', name: 'Ausgetrickst!',        desc: 'Tor nach einem Trick (hoch-runter-hoch)' },
+  { id: 'chip',      icon: '🪂', name: 'Lupfer-König',         desc: 'Tor nach einem Lupfer über den Gegner' },
+  { id: 'hattrick',  icon: '🎩', name: 'Hattrick',             desc: 'Drei Tore hintereinander ohne Gegentor' },
+  { id: 'keeper',    icon: '🧤', name: 'Super-Torwart',        desc: '10 Bälle gefangen oder gehalten', prog: s => [Math.min(s.saves, 10), 10] },
+  { id: 'tackles',   icon: '🦵', name: 'Grätschen-Profi',      desc: '10 Bälle mit Grätschen erobert', prog: s => [Math.min(s.tackles, 10), 10] },
+  { id: 'secret',    icon: '🚗', name: 'Scherben bringen Glück', desc: '…', secret: true },
+];
+const freshAch = () => ({ unlocked: {}, stats: { wins: 0, streak: 0, bestStreak: 0, bestDist: 0, celebs: [], cleanSheets: 0, saves: 0, tackles: 0 } });
+let ACH = freshAch();
+try { const raw = localStorage.getItem(ACH_KEY); if (raw) { const o = JSON.parse(raw); ACH = { unlocked: o.unlocked || {}, stats: Object.assign(freshAch().stats, o.stats || {}) }; } } catch (_) {}
+try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (_) {}
+function saveAch() { try { localStorage.setItem(ACH_KEY, JSON.stringify(ACH)); } catch (_) {} }
+const toasts = [];
+function toast(icon, title, text) { toasts.push({ icon, title, text, t: 0 }); }
+function unlock(id) {
+  if (ACH.unlocked[id]) return;
+  ACH.unlocked[id] = Date.now(); saveAch();
+  const a = ACHS.find(x => x.id === id);
+  toast(a.icon, 'Erfolg freigeschaltet!', a.name);
+  [784, 988, 1175].forEach((f, i) => setTimeout(() => beep(f, 0.12, 'triangle', 0.15), 600 + i * 90));
+}
+// per-match tracking
+let matchStats = { run: 0 }, gameClock = 0, lastShot = null, trickMark = null;
+function achGoal(team) {
+  const S = ACH.stats;
+  if (team === 0) {
+    matchStats.run++;
+    if (matchStats.run >= 3) unlock('hattrick');
+    if (lastShot && lastShot.by === me) {
+      const dist = Math.hypot(FW - lastShot.x, FD / 2 - lastShot.d) * M_PER_UNIT;
+      if (dist > S.bestDist + 0.05) {
+        const first = !S.bestDist; S.bestDist = dist; saveAch();
+        if (first) unlock('longGoal'); else toast('📏', 'Neuer Rekord!', `Weitestes Tor: ${dist.toFixed(1).replace('.', ',')} m`);
+      }
+    }
+    if (trickMark && trickMark.clean && gameClock - trickMark.t < 6) unlock(trickMark.type === 'chip' ? 'chip' : 'trick');
+  } else matchStats.run = 0;
+  trickMark = null; lastShot = null;
+}
+function achMatchEnd(humanWon) {
+  const S = ACH.stats;
+  if (humanWon) {
+    S.wins++; S.streak++; S.bestStreak = Math.max(S.bestStreak, S.streak);
+    unlock('firstWin');
+    if (S.streak >= 5) unlock('streak5');
+    if (score[1] === 0) { S.cleanSheets++; if (ACH.unlocked.cleanSheet) toast('🧱', 'Zu Null gewonnen!', `Schon ${S.cleanSheets}×`); else unlock('cleanSheet'); }
+  } else S.streak = 0;
+  saveAch();
+}
+function achCeleb(move) {
+  const S = ACH.stats;
+  if (!S.celebs.includes(move)) { S.celebs.push(move); saveAch(); if (S.celebs.length >= 5) unlock('celebs'); }
+}
+function achCount(key, id, n) { ACH.stats[key]++; saveAch(); if (ACH.stats[key] >= n) unlock(id); }
+
+// ---------- Achievements board ----------
+let boardOpen = null;                                          // null | 'pause' | 'end'
+function boardRect() { const w = Math.min(940, W - 60), h = Math.min(660, H - 60); return { x: (W - w) / 2, y: (H - h) / 2, w, h }; }
+function resetRect() { const r = boardRect(); return { x: r.x + r.w - 230, y: r.y + r.h - 58, w: 200, h: 40 }; }
+function drawBoard() {
+  ctx.fillStyle = 'rgba(10,20,30,.6)'; ctx.fillRect(0, 0, W, H);
+  const r = boardRect();
+  whiteboard(r.x, r.y, r.w, r.h, 10);
+  ctx.textBaseline = 'middle'; ctx.fillStyle = '#1f4fd1';
+  ctx.textAlign = 'left'; ctx.font = `40px ${MARKER_FONT}`;
+  ctx.fillText(boardOpen === 'pause' ? 'PAUSE – Erfolge' : 'Erfolge', r.x + 32, r.y + 46);
+  ctx.textAlign = 'right'; ctx.font = `20px ${MARKER_FONT}`;
+  const n = ACHS.filter(a => ACH.unlocked[a.id]).length;
+  ctx.fillText(`${n} / ${ACHS.length} freigeschaltet`, r.x + r.w - 32, r.y + 48);
+  const S = ACH.stats, cols = 2, rows = Math.ceil(ACHS.length / cols);
+  const top = r.y + 88, cw = (r.w - 64 - 20) / cols, ch = (r.h - 88 - 74) / rows;
+  ACHS.forEach((a, i) => {
+    const cx = r.x + 32 + (i % cols) * (cw + 20), cy = top + Math.floor(i / cols) * ch;
+    const got = !!ACH.unlocked[a.id], hidden = a.secret && !got;
+    ctx.globalAlpha = got ? 1 : 0.38;
+    ctx.fillStyle = got ? 'rgba(31,79,209,.08)' : 'rgba(0,0,0,.04)';
+    ctx.beginPath(); ctx.roundRect(cx, cy + 3, cw, ch - 8, 10); ctx.fill();
+    ctx.font = `${Math.round(ch * 0.5)}px system-ui`; ctx.textAlign = 'center';
+    ctx.fillText(hidden ? '❓' : a.icon, cx + ch * 0.48, cy + ch / 2);
+    ctx.fillStyle = got ? '#1f4fd1' : '#555'; ctx.textAlign = 'left';
+    ctx.font = `${Math.round(Math.min(24, ch * 0.32))}px ${MARKER_FONT}`;
+    ctx.fillText(hidden ? '???' : a.name, cx + ch * 0.95, cy + ch * 0.36);
+    ctx.font = `600 ${Math.round(Math.min(17, ch * 0.24))}px ${UI_FONT}`; ctx.fillStyle = got ? '#2b3a67' : '#666';
+    let sub = hidden ? 'Geheimer Erfolg' : a.desc;
+    if (a.value) sub = `${a.desc}: ${a.value(S)}`;
+    ctx.fillText(sub, cx + ch * 0.95, cy + ch * 0.66, cw - ch - 90);
+    if (a.prog && !hidden) {                                    // progress bar
+      const [v, max] = a.prog(S), bw = 70, bx = cx + cw - bw - 12, by = cy + ch * 0.62;
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = 'rgba(0,0,0,.12)'; ctx.beginPath(); ctx.roundRect(bx, by - 6, bw, 12, 6); ctx.fill();
+      ctx.fillStyle = got ? '#2fb24c' : '#1f4fd1'; ctx.beginPath(); ctx.roundRect(bx, by - 6, Math.max(12, bw * v / max), 12, 6); ctx.fill();
+      ctx.fillStyle = '#1f4fd1'; ctx.textAlign = 'center'; ctx.font = `700 14px ${UI_FONT}`;
+      ctx.fillText(`${v}/${max}`, bx + bw / 2, by - 16);
+    }
+    if (got) { ctx.globalAlpha = 1; ctx.fillStyle = '#2fb24c'; ctx.font = `800 26px ${UI_FONT}`; ctx.textAlign = 'right'; if (!a.prog) ctx.fillText('✓', cx + cw - 14, cy + ch * 0.45); }
+    ctx.globalAlpha = 1;
+  });
+  ctx.textAlign = 'left'; ctx.fillStyle = '#1f4fd1'; ctx.font = `20px ${MARKER_FONT}`;
+  ctx.fillText(boardOpen === 'pause' ? 'Tippen zum Weiterspielen' : 'Tippen für ein neues Spiel', r.x + 32, r.y + r.h - 38);
+  const rr = resetRect();
+  ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 2; ctx.fillStyle = '#fff';
+  ctx.beginPath(); ctx.roundRect(rr.x, rr.y, rr.w, rr.h, 8); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#c0392b'; ctx.textAlign = 'center'; ctx.font = `700 16px ${UI_FONT}`;
+  ctx.fillText('Erfolge zurücksetzen', rr.x + rr.w / 2, rr.y + rr.h / 2 + 1);
+}
+function boardTap(e) {
+  const rr = resetRect();
+  if (e.clientX > rr.x && e.clientX < rr.x + rr.w && e.clientY > rr.y && e.clientY < rr.y + rr.h) {
+    if (confirm('Wirklich alle Erfolge löschen?')) { ACH = freshAch(); saveAch(); }
+    return;
+  }
+  if (boardOpen === 'pause') { paused = false; last = performance.now(); }
+  else { phase = 'menu'; msg = ''; document.getElementById('start').style.display = 'flex'; }
+  boardOpen = null;
+}
+function drawToasts(dt) {
+  if (!toasts.length) return;
+  const T = toasts[0]; T.t += dt;
+  const life = 3.2, x = 20, w = 360, h = 74;
+  const inT = Math.min(1, T.t / 0.35), outT = Math.max(0, (T.t - (life - 0.35)) / 0.35);
+  const y = 112 + (1 - inT) * -40 - outT * 30;
+  ctx.globalAlpha = Math.min(inT, 1 - outT);
+  whiteboard(x, y, w, h, 5);
+  ctx.textBaseline = 'middle'; ctx.textAlign = 'center'; ctx.font = '34px system-ui'; ctx.fillStyle = '#000';
+  ctx.fillText(T.icon, x + 40, y + h / 2);
+  ctx.textAlign = 'left'; ctx.fillStyle = '#2fb24c'; ctx.font = `800 16px ${UI_FONT}`;
+  ctx.fillText(T.title, x + 74, y + 24);
+  ctx.fillStyle = '#1f4fd1'; ctx.font = `22px ${MARKER_FONT}`;
+  ctx.fillText(T.text, x + 74, y + 50, w - 86);
+  ctx.globalAlpha = 1;
+  if (T.t > life) toasts.shift();
+}
+
 // ---------- Input ----------
 const ptr = { move: null, mx: 0, my: 0, kick: null, sprint: null };
 const hit = (b, e) => Math.hypot(e.clientX - b.x, e.clientY - b.y) < b.r + 14;
@@ -166,8 +310,8 @@ const playing = () => phase === 'play' || phase === 'ready';
 cv.addEventListener('pointerdown', e => {
   e.preventDefault();
   const onPause = phase !== 'menu' && e.clientX > btnP.x - 10 && e.clientY < btnP.y + btnP.w + 10;
-  if (paused) { paused = false; last = performance.now(); return; }       // any tap continues
-  if (onPause) { paused = true; ptr.move = ptr.kick = ptr.sprint = null; aim.active = false; endSprint(); return; }
+  if (boardOpen) { boardTap(e); return; }
+  if (onPause) { paused = true; boardOpen = 'pause'; ptr.move = ptr.kick = ptr.sprint = null; aim.active = false; endSprint(); return; }
   if (phase === 'celebrate') { if (hit(btnK, e)) skipCelebration(); return; }
   if (!playing()) return;
   try { cv.setPointerCapture(e.pointerId); } catch (_) {}
@@ -195,7 +339,7 @@ document.getElementById('go').addEventListener('click', async () => {
   try { await document.documentElement.requestFullscreen(); } catch (_) {}
   try { await screen.orientation.lock('landscape'); } catch (_) {}
   document.getElementById('start').style.display = 'none';
-  score = [0, 0]; me = cpu = null;
+  score = [0, 0]; me = cpu = null; matchStats = { run: 0 }; trickMark = null; lastShot = null;
   setupKickoff(Math.random() < 0.5);          // random first possession
   camX = FW / 2;
 });
@@ -306,13 +450,15 @@ function tryFeint(seq) {
   if ((seq === 'UDU' || seq === 'DUD') && dist2(me, o) < 170 && o.dazzle <= 0 && o.dazImm <= 0 && o.stun <= 0) {
     o.dazzle = DAZZLE_TIME * (2 - aiSkill()); o.vx *= 0.3; o.vd *= 0.3;
     feint.cd = FEINT_CD; feint.tokens.length = 0;
-    popup('Dazzled!', o.x, o.d, '#ffd23f'); setMood(me, 'cheeky', 1.5); beep(880, 0.08, 'triangle', 0.15); beep(1320, 0.12, 'triangle', 0.1);
+    trickMark = { type: 'dazzle', t: gameClock, clean: true };
+    popup('Schwindelig!', o.x, o.d, '#ffd23f'); setMood(me, 'cheeky', 1.5); beep(880, 0.08, 'triangle', 0.15); beep(1320, 0.12, 'triangle', 0.1);
   } else if (seq === 'RLR' && o.x > me.x && o.x - me.x < 240 && Math.abs(o.d - me.d) < 100) {
     ball.vx = 300; ball.vd = me.vd * 0.3; ball.vz = 420; ball.z = Math.max(ball.z, 1);
     me.ng = 0.2; owner = null;
     o.dazzle = DAZZLE_TIME * (2 - aiSkill()); o.vx *= 0.3; o.vd *= 0.3;
     feint.cd = FEINT_CD; feint.tokens.length = 0;
-    popup('Over the top!', me.x, me.d, '#7ee081'); setMood(me, 'cheeky', 1.5); beep(500, 0.15, 'triangle', 0.25);
+    trickMark = { type: 'chip', t: gameClock, clean: true };
+    popup('Drüber!', me.x, me.d, '#7ee081'); setMood(me, 'cheeky', 1.5); beep(500, 0.15, 'triangle', 0.25);
   }
 }
 
@@ -407,6 +553,7 @@ function doKick(p, power) {
   ball.vd = kd * pw + p.vd * 0.3;
   ball.vz = 60 + 300 * c * c;
   p.ng = 0.3; owner = null;
+  lastShot = { by: p, x: p.x, d: p.d };
   if (!p.ai) buzz(18);
   beep(180 + 200 * c, 0.1, 'triangle', 0.3);
 }
@@ -431,16 +578,18 @@ function movePlayer(p, other, dt) {
     p.vx = p.fx * p.slideV; p.vd = p.fd * p.slideV;
     if (inKeeperZone(p) && !ball.held &&
         ((dist2(p, ball) < 32 && ball.z < 40) || (owner === other && dist2(other, p) < PR * 2 + 6))) {
+      if (p === me && (owner === other || ball.held === other)) achCount('tackles', 'tackles', 10);
       ball.held = p; ball.holdT = HOLD_T; owner = p; p.slide = 0;
       if (dist2(other, p) < PR * 2 + 10) { other.stun = 0.6; other.ng = 0.8; }
-      popup('Caught!', p.x, p.d, p.ai ? '#7fb2ff' : '#ff7b84'); beep(300, 0.1, 'triangle', 0.2);
+      popup('Gefangen!', p.x, p.d, p.ai ? '#7fb2ff' : '#ff7b84'); beep(300, 0.1, 'triangle', 0.2);
     } else if (dist2(p, ball) < 32 && ball.z < 20) {
+      if (p === me && owner === other) achCount('tackles', 'tackles', 10);
       ball.vx = p.fx * 300 + (Math.random() - 0.5) * 120;
       ball.vd = p.fd * 300 + (Math.random() - 0.5) * 120;
       ball.vz = 60; p.ng = 0.25; owner = null;
     }
     if (other.stun <= 0 && ball.held !== other && dist2(other, p) < PR * 2 + 6) {
-      if (owner === other) setMood(p, 'cheeky', 1.2);
+      if (owner === other) { setMood(p, 'cheeky', 1.2); if (p === me) achCount('tackles', 'tackles', 10); }
       other.stun = 0.9; other.ng = 0.9; if (owner === other) owner = null;
       beep(90, 0.15, 'square', 0.15);
     }
@@ -486,7 +635,7 @@ function ballPhysics(dt, detectGoals) {
 function clang(vn) {
   if (Math.abs(vn) < 60) return;
   beep(1250, 0.12, 'square', 0.1); beep(880, 0.25, 'triangle', 0.12);
-  if (Math.abs(vn) > 200) popup('Clang!', ball.x, ball.d, '#ddd');
+  if (Math.abs(vn) > 200) popup('Pfosten!', ball.x, ball.d, '#ddd');
 }
 function goalFrame() {
   const m = BR + POST_R;
@@ -542,7 +691,9 @@ function goal(team) {
   owner = null;
   nextHumanKicks = team === 1;                        // whoever conceded kicks off
   const won = score[team] >= MATCH_GOALS;
-  msg = won ? (team === 0 ? 'YOU WIN! 🏆' : 'CPU wins – rematch?') : (team === 0 ? 'GOAL! 🎉' : 'CPU scores!');
+  achGoal(team);
+  if (won) achMatchEnd(team === 0);
+  msg = won ? (team === 0 ? 'GEWONNEN! 🏆' : 'Onkel gewinnt – Revanche?') : (team === 0 ? 'TOOOR! 🎉' : 'Onkel trifft!');
   startCelebration(team, won);
   if (team === 0) [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => beep(f, 0.15, 'square', 0.12), i * 110));
   else beep(150, 0.4, 'sawtooth', 0.1);
@@ -585,6 +736,7 @@ function startCelebration(team, won) {
   const list = sc === me ? HUMAN_MOVES : CPU_MOVES;
   celeb = { stage: 'party', t: 0, sc, ot, won, move: list[Math.floor(Math.random() * list.length)], k: {} };
   if (/[?&]celeb=/.test(location.search)) celeb.move = location.search.match(/celeb=(\w+)/)[1];   // testing aid
+  if (sc === me && HUMAN_MOVES.includes(celeb.move)) achCeleb(celeb.move);
   for (const p of [me, cpu]) { resetPose(p); p.slide = 0; p.stun = 0; p.dazzle = 0; p.recover = 0; p.z = 0; p.vz = 0; p.want = 0; p.stam = Math.max(p.stam, 0.85); }
   setMood(sc, 'celebrate', 30); setMood(ot, 'sad', 30);
   ball.held = null; owner = null; aim.active = false; endSprint(); ptr.kick = null;
@@ -699,7 +851,7 @@ function updateCelebration(dt) {
     for (const p of [me, cpu]) accelTo(p, 0, 0, dt * 2);
     if (C.t > 0.9) {
       resetPose(me); resetPose(cpu);
-      if (C.won) { phase = 'over'; phaseT = 3; msg = score[0] > score[1] ? 'YOU WIN! 🏆' : 'CPU wins – rematch?'; return; }
+      if (C.won) { phase = 'over'; phaseT = 3; msg = score[0] > score[1] ? 'GEWONNEN! 🏆' : 'Onkel gewinnt – Revanche?'; return; }
       Object.assign(ball, { x: FW / 2, d: FD / 2, z: 420, vx: 0, vd: 0, vz: 0, held: null });
       C.stage = 'drop'; C.t = 0;
     }
@@ -740,6 +892,8 @@ function update(dt) {
     if (phaseT <= 0) { phase = 'play'; msg = ''; }
   } else if (phase === 'play') {
     feint.cd = Math.max(0, feint.cd - dt);
+    gameClock += dt;
+    if (trickMark && (owner === cpu || ball.held === cpu)) trickMark.clean = false;   // the CPU touched it: no longer counts
     if (aim.active && (me.stun > 0 || me.slide > 0 || (owner !== me && dist2(me, ball) > KICK_R * 2))) aim.active = false;
     humanInput(dt); aiThink(cpu, dt);
     movePlayer(me, cpu, dt); movePlayer(cpu, me, dt);
@@ -753,7 +907,7 @@ function update(dt) {
     ballPhysics(dt, false);
     phaseT -= dt;
     if (phaseT <= 0) {
-      { phase = 'menu'; msg = ''; document.getElementById('start').style.display = 'flex'; }
+      { msg = ''; boardOpen = 'end'; phase = 'board'; }
     }
   }
   if (!sprint.active) sprint.cd = Math.max(0, sprint.cd - dt);
@@ -775,10 +929,11 @@ function keeperCheck() {
     if (sp < CATCH_SPEED * sk) {
       ball.held = p; ball.holdT = HOLD_T; owner = p;
       setMood(p === me ? cpu : me, 'shocked', 1.5);
-      popup('Caught!', p.x, p.d, '#7fb2ff'); beep(300, 0.1, 'triangle', 0.2);
+      if (p === me) achCount('saves', 'keeper', 10);
+      popup('Gefangen!', p.x, p.d, '#7fb2ff'); beep(300, 0.1, 'triangle', 0.2);
     } else if (sp < PARRY_SPEED * sk && Math.random() < 0.6 * sk) {
       ball.vx *= -0.35; ball.vd = ball.vd * 0.3 + (Math.random() - 0.5) * 300; ball.vz = 150;
-      p.ng = 0.4; popup('Saved!', p.x, p.d, '#7fb2ff'); beep(220, 0.15, 'square', 0.15);
+      p.ng = 0.4; if (p === me) achCount('saves', 'keeper', 10); popup('Gehalten!', p.x, p.d, '#7fb2ff'); beep(220, 0.15, 'square', 0.15);
     } else p.ng = 0.5;                                               // beaten – don't check this shot again
     return;
   }
@@ -1355,7 +1510,8 @@ function render() {
     drawButton(btnK, style, aim.active || me.slide > 0, aim.active ? aimShakeFrac() : 0);
     drawSprintButton(); drawJoystick();
   }
-  if (paused) drawPauseScreen();
+  drawToasts(Math.min(0.05, (performance.now() - (drawToasts.last || performance.now())) / 1000)); drawToasts.last = performance.now();
+  if (boardOpen) drawBoard();
 }
 
 function drawAim() {
