@@ -21,7 +21,7 @@ const SHOT_SPREAD_FAR = 0.22;           // extra radians at a full pitch length 
 
 // --- aiming (hold KICK) ---
 const SLOWMO = 0.25;                    // game speed while aiming
-const AIM_SHAKE_MAX = 0.95;             // radians of aim-line shake at the worst point (~43°)
+const AIM_SHAKE_MAX = 0.95;             // radians of aim-line shake at the worst point (~54°)
 const AIM_SHAKE_TIME = 4;               // seconds of holding until the shake is at its maximum
 
 // --- feints ---
@@ -33,9 +33,9 @@ const DAZZLE_TIME = 1.0, DAZZLE_IMMUNE = 2.5;
 const POST_R = 4;
 
 // --- boxes: hands are allowed in your own penalty area ---
-const PA_DEPTH = 230, PA_HALF = 160;    // penalty area (= goalkeeper zone)
-const GA_DEPTH = 90, GA_HALF = 100;     // goal area (6-yard box), drawn only
-const PEN_SPOT = 145;                   // penalty spot distance from the goal line
+const PA_DEPTH = 190, PA_HALF = 160;    // penalty area (= goalkeeper zone)
+const GA_DEPTH = 75, GA_HALF = 100;     // goal area (6-yard box), drawn only
+const PEN_SPOT = 125;                   // penalty spot distance from the goal line
 const CATCH_SPEED = 680;                // slower shots than this are caught
 const PARRY_SPEED = 920;                // shots up to this speed can be parried (60% chance)
 const KEEP_REACH = 60, HOLD_T = 2.0;    // reach of the hands; how long the keeper holds the ball
@@ -86,6 +86,21 @@ function screenToWorld(sx, sy) {
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const dist2 = (a, b) => Math.hypot(a.x - b.x, a.d - b.d);
 
+// ---------- Skins (big cartoon heads) ----------
+// Human player's head comes from skin/<expression>.png; if missing, a drawn cartoon face is used.
+const EXPRESSIONS = ['neutral', 'determined', 'celebrate', 'shocked', 'dizzy', 'sad', 'cheeky'];
+const SKIN = {};
+for (const n of EXPRESSIONS) { const im = new Image(); im.onload = () => { SKIN[n] = im; }; im.src = `skin/${n}.png`; }
+const HEAD_W = 52, HEAD_H = 73;          // world units – deliberately big so expressions read on a tablet
+
+function setMood(p, m, t) { p.mood = m; p.moodT = t; }
+function moodOf(p) {
+  if (p.stun > 0 || p.dazzle > 0) return 'dizzy';
+  if (p.moodT > 0) return p.mood;
+  if ((p === me && aim.active) || p.slide > 0 || p.kickT > 0 || (sprinting(p) && p.spd > 30)) return 'determined';
+  return 'neutral';
+}
+
 // ---------- State ----------
 let me, cpu, ball, owner = null, score = [0, 0];
 let phase = 'menu', phaseT = 0, msg = '', kickCharge = -1, nextHumanKicks = true;
@@ -101,7 +116,7 @@ function popup(txt, x, d, col = '#fff') { popups.push({ txt, x, d, t: 1.3, col }
 
 function mkPlayer(x, col, ai, stam = 1) {
   return { x, d: FD / 2, vx: 0, vd: 0, fx: ai ? -1 : 1, fd: 0, hx: ai ? -1 : 1, want: 0,
-    col, ai, stam, dazzle: 0, dazImm: 0, stun: 0, slide: 0, recover: 0, tcd: 0, ng: 0, run: 0, spd: 0, aim: 0 };
+    col, ai, stam, mood: 'neutral', moodT: 0, kickT: 0, dazzle: 0, dazImm: 0, stun: 0, slide: 0, recover: 0, tcd: 0, ng: 0, run: 0, spd: 0, aim: 0 };
 }
 function setupKickoff(humanKicks) {
   const sm = me ? Math.min(1, me.stam + 0.3) : 1, sc = cpu ? Math.min(1, cpu.stam + 0.3) : 1;
@@ -202,12 +217,16 @@ function humanInput(dt) {
     accelTo(p, aim.lvx, aim.lvd, dt);
     return;
   }
-  if (ball.held === p) {                       // goalkeeper holding the ball: stand still, joystick turns you
+  if (ball.held === p) {                       // goalkeeper carrying the ball (kept inside the penalty area)
     if (ptr.move !== null) {
       const dx = ptr.mx - joy.x, dd = ptr.my - joy.y, l = Math.hypot(dx, dd);
-      if (l > 10) { p.fx = dx / l; p.fd = dd / l; }
+      if (l > 10) {
+        p.fx = dx / l; p.fd = dd / l; p.want = Math.min(1, (l - 10) / (joy.r - 10));
+        const sp = p.want * maxSpeed(p) * 0.8;
+        accelTo(p, p.fx * sp, p.fd * sp, dt); return;
+      }
     }
-    accelTo(p, 0, 0, dt * 2); return;
+    accelTo(p, 0, 0, dt); return;
   }
   if (ptr.move !== null) {
     recordFlick((ptr.mx - joy.x) / joy.r, (ptr.my - joy.y) / joy.r);
@@ -267,13 +286,13 @@ function tryFeint(seq) {
   if ((seq === 'UDU' || seq === 'DUD') && dist2(me, o) < 170 && o.dazzle <= 0 && o.dazImm <= 0 && o.stun <= 0) {
     o.dazzle = DAZZLE_TIME * (2 - aiSkill()); o.vx *= 0.3; o.vd *= 0.3;
     feint.cd = FEINT_CD; feint.tokens.length = 0;
-    popup('Dazzled!', o.x, o.d, '#ffd23f'); beep(880, 0.08, 'triangle', 0.15); beep(1320, 0.12, 'triangle', 0.1);
+    popup('Dazzled!', o.x, o.d, '#ffd23f'); setMood(me, 'cheeky', 1.5); beep(880, 0.08, 'triangle', 0.15); beep(1320, 0.12, 'triangle', 0.1);
   } else if (seq === 'RLR' && o.x > me.x && o.x - me.x < 240 && Math.abs(o.d - me.d) < 100) {
     ball.vx = 300; ball.vd = me.vd * 0.3; ball.vz = 420; ball.z = Math.max(ball.z, 1);
     me.ng = 0.2; owner = null;
     o.dazzle = DAZZLE_TIME * (2 - aiSkill()); o.vx *= 0.3; o.vd *= 0.3;
     feint.cd = FEINT_CD; feint.tokens.length = 0;
-    popup('Over the top!', me.x, me.d, '#7ee081'); beep(500, 0.15, 'triangle', 0.25);
+    popup('Over the top!', me.x, me.d, '#7ee081'); setMood(me, 'cheeky', 1.5); beep(500, 0.15, 'triangle', 0.25);
   }
 }
 
@@ -281,7 +300,12 @@ function tryFeint(seq) {
 function aiThink(p, dt) {
   if (busy(p)) return;
   if (p.dazzle > 0) { accelTo(p, 0, 0, dt * 0.7); return; }
-  if (ball.held === p) { p.fx = -1; p.fd = (FD / 2 - p.d) / 300; accelTo(p, 0, 0, dt * 2); return; }
+  if (ball.held === p) {                       // walk the ball out towards the edge of the box
+    const tx = FW - PA_DEPTH + 40, td = FD / 2, dx = tx - p.x, dd = td - p.d, l = Math.hypot(dx, dd) || 1;
+    p.fx = -1; p.fd = 0;
+    const sp = Math.min(maxSpeed(p) * 0.35, l * 2);
+    accelTo(p, dx / l * sp, dd / l * sp, dt); return;
+  }
   if (kickoffLock && kicker !== p) {
     // waiting for your kick-off: pace impatiently around the edge of the circle, never inside
     const t = nowS(), ang = Math.sin(t * 0.7) * 0.9, R = CIRCLE_R + 70 + Math.sin(t * 1.9) * 15;
@@ -349,6 +373,7 @@ function doKick(p, power) {
   if (p.stun > 0 || p.slide > 0) return;
   if (dist2(p, ball) > KICK_R || ball.z > 40) return;
   if (ball.held === p) ball.held = null;      // goalkeeper punt
+  p.kickT = 0.5;
   const c = clamp(power, 0, 1);
   const pw = (300 + 600 * c) * (0.75 + 0.25 * p.stam) * (0.92 + Math.random() * 0.16);
   // accuracy: the further from the goal you're attacking, the bigger the random error
@@ -376,6 +401,7 @@ function doTackle(p) {
 function movePlayer(p, other, dt) {
   if (p.dazzle > 0) { p.dazzle -= dt; if (p.dazzle <= 0) p.dazImm = DAZZLE_IMMUNE; }
   else p.dazImm = Math.max(0, p.dazImm - dt);
+  p.moodT = Math.max(0, p.moodT - dt); p.kickT = Math.max(0, p.kickT - dt);
   p.stun = Math.max(0, p.stun - dt); p.tcd = Math.max(0, p.tcd - dt); p.ng = Math.max(0, p.ng - dt);
   if (p.recover > 0) { p.recover -= dt; accelTo(p, 0, 0, dt); }
   if (p.stun > 0) accelTo(p, 0, 0, dt * 0.6);
@@ -393,6 +419,7 @@ function movePlayer(p, other, dt) {
       ball.vz = 60; p.ng = 0.25; owner = null;
     }
     if (other.stun <= 0 && ball.held !== other && dist2(other, p) < PR * 2 + 6) {
+      if (owner === other) setMood(p, 'cheeky', 1.2);
       other.stun = 0.9; other.ng = 0.9; if (owner === other) owner = null;
       beep(90, 0.15, 'square', 0.15);
     }
@@ -490,6 +517,7 @@ function ballStep(dt, detectGoals) {
 
 function goal(team) {
   score[team]++;
+  setMood(team === 0 ? me : cpu, 'celebrate', 4); setMood(team === 0 ? cpu : me, 'sad', 4);
   owner = null;
   nextHumanKicks = team === 1;                        // whoever conceded kicks off
   const won = score[team] >= MATCH_GOALS;
@@ -556,6 +584,7 @@ function keeperCheck() {
     const sp = Math.hypot(ball.vx, ball.vd, ball.vz), sk = p.ai ? aiSkill() : 1;
     if (sp < CATCH_SPEED * sk) {
       ball.held = p; ball.holdT = HOLD_T; owner = p;
+      setMood(p === me ? cpu : me, 'shocked', 1.5);
       popup('Caught!', p.x, p.d, '#7fb2ff'); beep(300, 0.1, 'triangle', 0.2);
     } else if (sp < PARRY_SPEED * sk && Math.random() < 0.6 * sk) {
       ball.vx *= -0.35; ball.vd = ball.vd * 0.3 + (Math.random() - 0.5) * 300; ball.vz = 150;
@@ -566,6 +595,10 @@ function keeperCheck() {
 }
 function heldBall(dt) {
   const p = ball.held;
+  const x0 = p.ai ? FW - PA_DEPTH + PR : PR, x1 = p.ai ? FW - PR : PA_DEPTH - PR;
+  const d0 = FD / 2 - PA_HALF + PR, d1 = FD / 2 + PA_HALF - PR;
+  if (p.x < x0 || p.x > x1) { p.x = clamp(p.x, x0, x1); p.vx = 0; }
+  if (p.d < d0 || p.d > d1) { p.d = clamp(p.d, d0, d1); p.vd = 0; }
   ball.x = p.x + (p.hx >= 0 ? 1 : -1) * 10; ball.d = p.d + 0.5; ball.z = 24;
   ball.vx = ball.vd = ball.vz = 0; owner = p;
   ball.holdT -= dt;
@@ -698,55 +731,94 @@ function drawPlayer(p) {
   ctx.save(); ctx.translate(sx, sy);
   const dir = p.hx >= 0 ? 1 : -1;
   if (p.slide > 0) ctx.rotate(dir * 1.1);
-  const swing = p.spd > 20 ? Math.sin(p.run) * Math.min(10, p.spd / 25) : 0;
-  const tiredLean = (1 - p.stam) * 4 * dir;
+  const swing = p.spd > 20 ? Math.sin(p.run) * Math.min(8, p.spd / 30) : 0;
+  const lean = (1 - p.stam) * 4 * dir;
   ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s; ctx.lineCap = 'round';
   if (sprinting(p) && p.spd > 30) drawWheel(s, p.run * 3, dir);
   else {
-    ctx.beginPath(); ctx.moveTo(-3 * s, -20 * s); ctx.lineTo((-3 + swing) * s, 0);
-    ctx.moveTo(3 * s, -20 * s); ctx.lineTo((3 - swing) * s, 0); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(-3 * s, -16 * s); ctx.lineTo((-3 + swing) * s, 0);
+    ctx.moveTo(3 * s, -16 * s); ctx.lineTo((3 - swing) * s, 0); ctx.stroke();
   }
   ctx.fillStyle = p.col;
-  ctx.beginPath(); ctx.roundRect((-10 + tiredLean * 0.5) * s, -44 * s, 20 * s, 26 * s, 5 * s); ctx.fill();
+  ctx.beginPath(); ctx.roundRect((-9 + lean * 0.4) * s, -38 * s, 18 * s, 23 * s, 5 * s); ctx.fill();
   drawArms(p, s, dir, swing);
-  ctx.fillStyle = '#f2c79b';
-  ctx.beginPath(); ctx.arc(tiredLean * s, -54 * s, 10 * s, 0, Math.PI * 2); ctx.fill();
-  ctx.fillStyle = '#222';
-  ctx.beginPath(); ctx.arc((tiredLean + dir * 4) * s, -55 * s, 1.8 * s, 0, Math.PI * 2); ctx.fill();
+  drawHead(p, s, dir, lean);
   ctx.restore();
-  // stamina bar
-  const bw = 34 * s, by = sy - 74 * s;
+  // stamina bar above the head
+  const bw = 34 * s, by = sy - (HEAD_H + 40) * s;
   ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(sx - bw / 2 - 1, by - 1, bw + 2, 6 * s + 2);
   ctx.fillStyle = p.stam > 0.5 ? '#5ad65a' : p.stam > 0.25 ? '#ffd23f' : '#ff5a4f';
   ctx.fillRect(sx - bw / 2, by, bw * p.stam, 6 * s);
-  if (p.dazzle > 0) {
-    ctx.font = `${20 * s}px system-ui`; ctx.textAlign = 'center';
+  if (p.dazzle > 0 || p.stun > 0) {
+    ctx.font = `${18 * s}px system-ui`; ctx.textAlign = 'center';
     const t = performance.now() / 90;
-    for (let i = 0; i < 3; i++) ctx.fillText('⭐', sx + Math.cos(t + i * 2.1) * 16 * s, by - 8 * s + Math.sin(t + i * 2.1) * 5 * s);
-  } else if (p.stun > 0) {
-    ctx.font = `${16 * s}px system-ui`; ctx.textAlign = 'center';
-    ctx.fillText('💫', sx + Math.sin(performance.now() / 120) * 8 * s, by - 10 * s);
-  } else if (p.stam < 0.2) {
-    ctx.font = `${14 * s}px system-ui`; ctx.textAlign = 'center';
-    ctx.fillText('💦', sx + 16 * s * dir, by - 8 * s);
+    for (let i = 0; i < 3; i++) ctx.fillText(p.dazzle > 0 ? '⭐' : '💫', sx + Math.cos(t + i * 2.1) * 18 * s, by - 8 * s + Math.sin(t + i * 2.1) * 5 * s);
   }
+  if (p.stam < 0.2 && p.stun <= 0 && p.dazzle <= 0) {
+    ctx.font = `${14 * s}px system-ui`; ctx.textAlign = 'center';
+    ctx.fillText('💦', sx + 20 * s * dir, by + 14 * s);
+  }
+}
+
+function drawHead(p, s, dir, lean) {
+  const mood = moodOf(p), img = !p.ai && SKIN[mood] ? SKIN[mood] : (!p.ai ? SKIN.neutral : null);
+  const bob = p.spd > 20 ? Math.abs(Math.sin(p.run)) * 1.5 : 0;
+  const cx = lean * s, bottom = (-32 - bob) * s;              // neck sits on the shoulders
+  if (img) {
+    const w = HEAD_W * s, h = HEAD_H * s;
+    ctx.drawImage(img, cx - w / 2, bottom - h, w, h);
+    return;
+  }
+  // drawn cartoon head (CPU, or the human when no skin is present)
+  const r = 21 * s, cy = bottom - r - 4 * s, fx = cx + dir * 3 * s;
+  ctx.fillStyle = '#f2c79b'; ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5 * s;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#4a2e1a';                                     // hair
+  ctx.beginPath(); ctx.arc(cx, cy, r, Math.PI * 1.05, Math.PI * 1.95); ctx.closePath(); ctx.fill();
+  ctx.strokeStyle = '#222'; ctx.fillStyle = '#222'; ctx.lineWidth = 2 * s; ctx.lineCap = 'round';
+  const ey = cy - 2 * s, ex = 6.5 * s;
+  for (const sgn of [-1, 1]) {
+    const x = fx + sgn * ex;
+    if (mood === 'dizzy') {
+      ctx.beginPath(); ctx.arc(x, ey, 3.5 * s, 0, Math.PI * 1.6); ctx.stroke();
+    } else if (mood === 'celebrate') {
+      ctx.beginPath(); ctx.arc(x, ey + 1.5 * s, 3 * s, Math.PI * 1.1, Math.PI * 1.9); ctx.stroke();
+    } else if (mood === 'cheeky' && sgn === 1) {
+      ctx.beginPath(); ctx.moveTo(x - 3 * s, ey); ctx.lineTo(x + 3 * s, ey); ctx.stroke();
+    } else {
+      ctx.fillStyle = '#fff'; ctx.beginPath(); ctx.arc(x, ey, (mood === 'shocked' ? 4.5 : 3.6) * s, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#222'; ctx.beginPath(); ctx.arc(x + dir * 1.2 * s, ey, 1.8 * s, 0, Math.PI * 2); ctx.fill();
+    }
+    if (mood === 'determined' || mood === 'sad') {                // eyebrows
+      const t = mood === 'determined' ? 1 : -1;
+      ctx.beginPath(); ctx.moveTo(x - 4 * s * sgn, ey - 6 * s - t * 1.5 * s); ctx.lineTo(x + 3 * s * sgn, ey - 5 * s + t * 1.5 * s); ctx.stroke();
+    }
+  }
+  const my = cy + 9 * s;                                          // mouth
+  ctx.beginPath();
+  if (mood === 'celebrate') { ctx.fillStyle = '#7a1f1f'; ctx.arc(fx, my - 2 * s, 7 * s, 0, Math.PI); ctx.fill(); }
+  else if (mood === 'sad' || mood === 'dizzy') { ctx.arc(fx, my + 4 * s, 5 * s, Math.PI * 1.15, Math.PI * 1.85); ctx.stroke(); }
+  else if (mood === 'shocked') { ctx.fillStyle = '#7a1f1f'; ctx.ellipse(fx, my, 3.5 * s, 5 * s, 0, 0, Math.PI * 2); ctx.fill(); }
+  else if (mood === 'determined') { ctx.moveTo(fx - 5 * s, my); ctx.lineTo(fx + 5 * s, my); ctx.stroke(); }
+  else if (mood === 'cheeky') { ctx.arc(fx, my - 2 * s, 5 * s, 0.2, Math.PI - 0.6); ctx.stroke(); }
+  else { ctx.arc(fx, my - 3 * s, 5 * s, 0.4, Math.PI - 0.4); ctx.stroke(); }
 }
 
 // Cartoon blur-loop legs while sprinting (classic "legs become a whirl" effect)
 function drawWheel(s, rot, dir) {
-  const cy = -10 * s;
+  const cy = -8 * s;
   ctx.save(); ctx.lineCap = 'round';
   for (let i = 0; i < 6; i++) {                                   // smeared leg loops
     const a = rot + i * 1.05;
     ctx.strokeStyle = `rgba(30,30,30,${0.42 - i * 0.05})`; ctx.lineWidth = (4.5 - i * 0.4) * s;
     ctx.beginPath();
-    ctx.ellipse(Math.cos(a) * 3 * s, cy + Math.sin(a) * 2 * s, (13 + i) * s, (9 + i * 0.6) * s, -dir * 0.35, 0, Math.PI * 2);
+    ctx.ellipse(Math.cos(a) * 3 * s, cy + Math.sin(a) * 2 * s, (10 + i) * s, (7 + i * 0.5) * s, -dir * 0.35, 0, Math.PI * 2);
     ctx.stroke();
   }
   ctx.strokeStyle = 'rgba(210,40,40,.55)'; ctx.lineWidth = 3.5 * s;  // shoe smears
   for (const off of [0, Math.PI]) {
     const a = (rot % (Math.PI * 2)) + off;
-    ctx.beginPath(); ctx.ellipse(0, cy + 2 * s, 15 * s, 10 * s, -dir * 0.35, a, a + 1.3); ctx.stroke();
+    ctx.beginPath(); ctx.ellipse(0, cy + 2 * s, 12 * s, 8 * s, -dir * 0.35, a, a + 1.3); ctx.stroke();
   }
   ctx.fillStyle = 'rgba(230,220,200,.45)';                          // dust puffs behind
   for (let i = 0; i < 3; i++) {
@@ -771,14 +843,14 @@ function armMode(p) {
 function drawArms(p, s, dir, swing) {
   const mode = armMode(p), o = p === me ? cpu : me;
   let hands;
-  if (mode === 'hold') hands = [[dir * 12, -34], [dir * 12, -28]];
-  else if (mode === 'push') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 19, -21], [-sg * 4, -24]]; }
-  else if (mode === 'spread') hands = [[-19, -21], [19, -21]];
-  else if (mode === 'keeper') hands = [[-25, -40], [25, -40]];
-  else hands = [[swing * 0.8, -24], [-swing * 0.8, -24]];
+  if (mode === 'hold') hands = [[dir * 12, -30], [dir * 12, -25]];
+  else if (mode === 'push') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 21, -27], [-sg * 4, -20]]; }
+  else if (mode === 'spread') hands = [[-21, -27], [21, -27]];
+  else if (mode === 'keeper') hands = [[-24, -34], [24, -34]];
+  else hands = [[swing * 0.8, -20], [-swing * 0.8, -20]];
   for (const [hx, hy] of hands) {
     ctx.strokeStyle = p.col; ctx.lineWidth = 5 * s;
-    ctx.beginPath(); ctx.moveTo(0, -40 * s); ctx.lineTo(hx * s, hy * s); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(0, -34 * s); ctx.lineTo(hx * s, hy * s); ctx.stroke();
     ctx.fillStyle = '#f2c79b';
     ctx.beginPath(); ctx.arc(hx * s, hy * s, 3.6 * s, 0, Math.PI * 2); ctx.fill();
   }
@@ -879,7 +951,7 @@ function drawPopups() {
     const [sx, sy] = P(p.x, p.d), s = scaleAt(p.d), rise = (1.3 - p.t) * 40;
     ctx.globalAlpha = Math.min(1, p.t / 0.4);
     ctx.font = `900 ${22 * s}px system-ui`; ctx.lineWidth = 5; ctx.strokeStyle = 'rgba(0,0,0,.6)';
-    ctx.strokeText(p.txt, sx, sy - 95 * s - rise); ctx.fillStyle = p.col; ctx.fillText(p.txt, sx, sy - 95 * s - rise);
+    ctx.strokeText(p.txt, sx, sy - (HEAD_H + 58) * s - rise); ctx.fillStyle = p.col; ctx.fillText(p.txt, sx, sy - (HEAD_H + 58) * s - rise);
   }
   ctx.globalAlpha = 1;
 }
