@@ -8,6 +8,9 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Baloo+2:wght@600;800&family=Permanent+Marker&display=swap" rel="stylesheet">
 <link rel="icon" href="icons/icon-192.png">
 <link rel="apple-touch-icon" href="icons/icon-192.png">
 <title>Kick-About</title>
@@ -16,11 +19,11 @@
     -webkit-user-select:none;user-select:none;-webkit-touch-callout:none;overscroll-behavior:none}
   canvas{display:block;width:100vw;height:100vh;touch-action:none}
   .overlay{position:fixed;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
-    color:#fff;font:600 22px system-ui,sans-serif;text-align:center}
+    color:#fff;font:600 22px 'Baloo 2',system-ui,sans-serif;text-align:center}
   #start{background:rgba(0,0,0,.55)}
   #start h1{font-size:52px;margin:0 0 10px}
   #start p{opacity:.85;margin:4px}
-  #start button{font:700 32px system-ui,sans-serif;padding:18px 56px;border-radius:40px;border:0;
+  #start button{font:800 32px 'Baloo 2',system-ui,sans-serif;padding:18px 56px;border-radius:40px;border:0;
     background:#ffd23f;color:#222;margin-top:26px}
   #rotate{display:none;background:#0d3b1a;font-size:28px}
   @media (orientation:portrait){#rotate{display:flex}}
@@ -36,6 +39,10 @@
 </div>
 <div id="rotate" class="overlay">Please turn the tablet sideways ↻</div>
 <script src="game.js"></script>
+<script>
+  // canvas text only picks up web fonts once they are loaded
+  if (document.fonts) { document.fonts.load("800 20px 'Baloo 2'"); document.fonts.load("20px 'Permanent Marker'"); }
+</script>
 <script>
   if ('serviceWorker' in navigator) addEventListener('load', () => navigator.serviceWorker.register('sw.js'));
 </script>
