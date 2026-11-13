@@ -57,12 +57,13 @@ const btnK = { r: 88, label: 'KICK', col: '#ffd23f' };
 const btnS = { r: 52, label: 'SPRINT', col: '#7ee081' };
 const joy = { r: 110 };
 
+let themeReady = false;                  // set once the backyard theme has loaded
 function resize() {
   const dpr = Math.min(devicePixelRatio || 1, 2);
   W = innerWidth; H = innerHeight;
   cv.width = W * dpr; cv.height = H * dpr;
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  const nearY = H + 10, farY = Math.max(150, H * 0.24);
+  const nearY = H + 10, farY = Math.max(150, H * (themeReady ? 0.33 : 0.24));   // more sky for the backyard backdrop
   A = (nearY - farY) / (1 / D0 - 1 / (D0 + FD));
   HY = nearY - A / D0;
   F = (D0 + FD / 2) * W / VIEW_W;
@@ -636,7 +637,141 @@ function line(x1, d1, x2, d2) {
   ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
 }
 
+// =====================================================================
+//  Backyard theme (optional): theme/backyard/*. If any required file is
+//  missing, the generic stadium is drawn instead.
+// =====================================================================
+const THEME_DIR = 'theme/backyard/';
+const TH = {};
+let groundPieces = null, skyCol = '#8cc8ee';
+const GX0 = -420, GX1 = FW + 420, GD0 = -45, GD1 = FD + 45;   // world area baked into the ground texture
+const GPU = 2.8, GPIECES = 2;                                  // texture px per world unit; split to stay < 4096 px
+const TILE_WORLD = 170;                                        // world units covered by one gravel tile
+const WALL_D = -40, WALL_H = 62;                               // the stone wall stands just behind the far touchline
+const PROPS = [                                                // [image, x, d, height in world units]
+  ['bush', 790, -27, 72], ['bush', 905, -30, 56], ['tree', FW + 150, -22, 240], ['palm', -175, 105, 88],
+];
+(function loadTheme() {
+  const req = { backdrop: 'backdrop.jpg', wall: 'wall.jpg', grey: 'gravel_grey.jpg', brown: 'gravel_brown.jpg' };
+  const opt = { palm: 'prop_palm.png', bush: 'prop_bush.png', tree: 'prop_tree.png' };
+  let left = Object.keys(req).length, failed = false;
+  for (const [k, f] of Object.entries(req)) {
+    const im = new Image();
+    im.onload = () => { TH[k] = im; if (--left === 0 && !failed) buildTheme(); };
+    im.onerror = () => { failed = true; };
+    im.src = THEME_DIR + f;
+  }
+  for (const [k, f] of Object.entries(opt)) { const im = new Image(); im.onload = () => { TH[k] = im; }; im.src = THEME_DIR + f; }
+})();
+
+// Where the dark grey gravel lies (the rest is the finer brown gravel), roughly like the real yard.
+function greyArea(g) {
+  const X = x => (x - GX0) * GPU, Y = d => (d - GD0) * GPU;
+  g.beginPath();
+  g.moveTo(X(GX0), Y(GD0));
+  for (let d = GD0; d <= GD1; d += 5) {
+    const xb = 470 + 0.45 * d + 22 * Math.sin(d * 0.045) + 9 * Math.sin(d * 0.17);
+    g.lineTo(X(xb), Y(d));
+  }
+  g.lineTo(X(GX0), Y(GD1)); g.closePath();
+  // grey patch in the brown part
+  for (let i = 0; i <= 40; i++) {
+    const a = i / 40 * Math.PI * 2, r = 1 + 0.12 * Math.sin(a * 3 + 1) + 0.07 * Math.sin(a * 7);
+    const x = 880 + Math.cos(a) * 150 * r, d = 215 + Math.sin(a) * 85 * r;
+    i ? g.lineTo(X(x), Y(d)) : g.moveTo(X(x), Y(d));
+  }
+  g.closePath();
+}
+function buildTheme() {
+  const Wpx = Math.ceil((GX1 - GX0) * GPU), Hpx = Math.ceil((GD1 - GD0) * GPU), pw = Math.ceil(Wpx / GPIECES);
+  const tile = TILE_WORLD * GPU;
+  const fill = (g, img, ox) => {
+    for (let ty = 0; ty < Hpx; ty += tile)
+      for (let tx = Math.floor(ox / tile) * tile; tx < ox + pw; tx += tile) g.drawImage(img, tx, ty, tile + 1, tile + 1);
+  };
+  groundPieces = [];
+  for (let i = 0; i < GPIECES; i++) {
+    const c = document.createElement('canvas'); c.width = pw; c.height = Hpx;
+    const g = c.getContext('2d'), ox = i * pw;
+    g.setTransform(1, 0, 0, 1, -ox, 0);
+    fill(g, TH.brown, ox);
+    g.save(); greyArea(g); g.clip(); fill(g, TH.grey, ox); g.restore();
+    g.save(); greyArea(g); g.strokeStyle = 'rgba(40,30,25,.35)'; g.lineWidth = 3; g.stroke(); g.restore();
+    const sh = g.createLinearGradient(0, 0, 0, 30 * GPU);                    // soft shade at the foot of the wall
+    sh.addColorStop(0, 'rgba(0,0,0,.35)'); sh.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = sh; g.fillRect(ox, 0, pw, 30 * GPU);
+    groundPieces.push({ c, x0: GX0 + ox / GPU, x1: GX0 + (ox + pw) / GPU });
+  }
+  try {                                                                       // sky colour = top of the backdrop
+    const t = document.createElement('canvas'); t.width = t.height = 1;
+    const tg = t.getContext('2d'); tg.drawImage(TH.backdrop, 0, 0, 40, 4, 0, 0, 1, 1);
+    const [r, gg, b] = tg.getImageData(0, 0, 1, 1).data; skyCol = `rgb(${r},${gg},${b})`;
+  } catch (_) {}
+  themeReady = true; resize();
+}
+
+// Ground in perspective: the baked top-down texture is drawn in thin horizontal strips.
+function drawGroundTex() {
+  const dAt = y => D0 + FD - A / Math.max(1, y - HY);
+  const yTop = Math.max(0, Math.floor(P(0, GD0)[1])), STEP = 3;
+  for (let y = yTop; y < H; y += STEP) {
+    const y1 = Math.min(H, y + STEP);
+    const da = Math.max(GD0, dAt(y)), db = Math.min(GD1, dAt(y1));
+    if (db <= da) continue;
+    const k = F / camDist((da + db) / 2);
+    const xa = camX - (W / 2) / k, xb = camX + (W / 2) / k;
+    for (const pc of groundPieces) {
+      const ix0 = Math.max(xa, pc.x0), ix1 = Math.min(xb, pc.x1);
+      if (ix1 <= ix0) continue;
+      const dx0 = W / 2 + (ix0 - camX) * k, dx1 = W / 2 + (ix1 - camX) * k;
+      ctx.drawImage(pc.c, (ix0 - pc.x0) * GPU, (da - GD0) * GPU, (ix1 - ix0) * GPU, Math.max(0.5, (db - da) * GPU),
+        dx0, y, dx1 - dx0 + 0.6, y1 - y + 0.6);
+    }
+  }
+}
+function drawBackdropAndWall() {
+  const k = scaleAt(WALL_D), base = P(0, WALL_D)[1], wallTop = base - WALL_H * k;
+  // backdrop with parallax; its bushy bottom hides behind the wall
+  const hb = Math.max(250, wallTop + 80), wb = TH.backdrop.width * hb / TH.backdrop.height, yb = wallTop + 45;
+  ctx.fillStyle = skyCol; ctx.fillRect(0, 0, W, Math.max(0, yb - hb) + 2);
+  const off = ((-camX * k * 0.45) % wb + wb) % wb;
+  for (let x = off - wb; x < W; x += wb) ctx.drawImage(TH.backdrop, x, yb - hb, wb + 0.5, hb);
+  // the wall (a plane facing the camera, so a plain scaled strip)
+  const ww = TH.wall.width * (WALL_H * k) / TH.wall.height;
+  const woff = ((W / 2 - camX * k) % ww + ww) % ww;
+  for (let x = woff - ww; x < W; x += ww) ctx.drawImage(TH.wall, x, wallTop, ww + 0.5, WALL_H * k + 1);
+}
+function drawProps() {
+  for (const [name, x, d, h] of PROPS) {
+    const img = TH[name]; if (!img) continue;
+    const s = scaleAt(d), ph = h * s, pw = img.width / img.height * ph, [sx, sy] = P(x, d);
+    if (sx + pw < 0 || sx - pw > W) continue;
+    ctx.fillStyle = 'rgba(0,0,0,.25)';
+    ctx.beginPath(); ctx.ellipse(sx, sy, pw * 0.35, pw * 0.08, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.drawImage(img, sx - pw / 2, sy - ph, pw, ph);
+  }
+}
+// Orange training cones mark the goal posts (the goal frame itself is drawn "ghosted").
+function drawCone(x, d) {
+  const s = scaleAt(d), [cx, cy] = P(x, d), h = 30 * s, r = 11 * s, t = 2.5 * s;
+  ctx.fillStyle = 'rgba(0,0,0,.3)';
+  ctx.beginPath(); ctx.ellipse(cx + 3 * s, cy, r * 1.5, r * 0.5, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.fillStyle = '#e8650f';                                                  // square base
+  ctx.beginPath(); ctx.ellipse(cx, cy, r * 1.35, r * 0.45, 0, 0, Math.PI * 2); ctx.fill();
+  const body = new Path2D();
+  body.moveTo(cx - r, cy); body.lineTo(cx - t, cy - h); body.lineTo(cx + t, cy - h); body.lineTo(cx + r, cy);
+  body.quadraticCurveTo(cx, cy + r * 0.35, cx - r, cy); body.closePath();
+  const gr = ctx.createLinearGradient(cx - r, 0, cx + r, 0);
+  gr.addColorStop(0, '#ffa040'); gr.addColorStop(0.45, '#ff7a1a'); gr.addColorStop(1, '#c9500a');
+  ctx.fillStyle = gr; ctx.fill(body);
+  ctx.save(); ctx.clip(body);                                                 // white reflective band
+  ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.fillRect(cx - r, cy - h * 0.62, 2 * r, h * 0.16);
+  ctx.restore();
+  ctx.strokeStyle = '#6b2c05'; ctx.lineWidth = Math.max(1, 1.4 * s); ctx.stroke(body);
+}
+
 function drawStadium() {
+  if (themeReady) { drawBackdropAndWall(); drawGroundTex(); drawProps(); return; }
   // crowd / stands
   const g = ctx.createLinearGradient(0, 0, 0, P(0, -40)[1]);
   g.addColorStop(0, '#1b2238'); g.addColorStop(1, '#2d3554');
@@ -664,7 +799,8 @@ function drawStadium() {
 }
 
 function drawPitch() {
-  const n = 11;
+  const n = themeReady ? 0 : 11;                  // backyard: no grass stripes, chalk lines only
+  if (themeReady) ctx.globalAlpha = 0.5;
   for (let i = 0; i < n; i++) {
     const x0 = FW * i / n, x1 = FW * (i + 1) / n + 0.5;
     poly([P(x0, 0), P(x1, 0), P(x1, FD), P(x0, FD)], i % 2 ? '#2fa24b' : '#29943f');
@@ -700,7 +836,15 @@ function drawPitch() {
   }
 }
 
+function endPitch() { ctx.globalAlpha = 1; }
 function drawGoal(side, front) {
+  if (themeReady) { ctx.save(); ctx.globalAlpha = 0.38; drawGoalFrame(side, front); ctx.restore();
+    const x = side ? FW : 0;
+    drawCone(x, FD / 2 + (front ? GOAL_HALF : -GOAL_HALF));
+    return; }
+  drawGoalFrame(side, front);
+}
+function drawGoalFrame(side, front) {
   const x = side ? FW : 0, bx = side ? FW + GOAL_DEPTH : -GOAL_DEPTH;
   const d1 = FD / 2 - GOAL_HALF, d2 = FD / 2 + GOAL_HALF, bh = GOAL_H * 0.8;
   const net = 'rgba(255,255,255,.16)', netLine = 'rgba(255,255,255,.4)';
@@ -899,7 +1043,7 @@ function drawButton(b, active, charge) {
 function render() {
   drawStadium();
   if (!me) return;
-  drawPitch();
+  drawPitch(); endPitch();
   drawGoal(0, false); drawGoal(1, false);
   const items = [me, cpu, ball].sort((a, b) => a.d - b.d);
   for (const it of items) {
