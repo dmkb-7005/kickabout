@@ -174,7 +174,7 @@ const ACHS = [
   { id: 'hattrick',  icon: '🎩', name: 'Hattrick',             desc: 'Drei Tore hintereinander ohne Gegentor' },
   { id: 'keeper',    icon: '🧤', name: 'Super-Torwart',        desc: '10 Bälle gefangen oder gehalten', prog: s => [Math.min(s.saves, 10), 10] },
   { id: 'tackles',   icon: '🦵', name: 'Grätschen-Profi',      desc: '10 Bälle mit Grätschen erobert', prog: s => [Math.min(s.tackles, 10), 10] },
-  { id: 'secret',    icon: '🚗', name: 'Scherben bringen Glück', desc: '…', secret: true },
+  { id: 'secret',    icon: '🚗', name: 'Scherben bringen Glück', desc: 'Onkel hat sein eigenes Auto getroffen', secret: true },
 ];
 const freshAch = () => ({ unlocked: {}, stats: { wins: 0, streak: 0, bestStreak: 0, bestDist: 0, celebs: [], cleanSheets: 0, saves: 0, tackles: 0 } });
 let ACH = freshAch();
@@ -339,7 +339,7 @@ document.getElementById('go').addEventListener('click', async () => {
   try { await document.documentElement.requestFullscreen(); } catch (_) {}
   try { await screen.orientation.lock('landscape'); } catch (_) {}
   document.getElementById('start').style.display = 'none';
-  score = [0, 0]; me = cpu = null; matchStats = { run: 0 }; trickMark = null; lastShot = null;
+  score = [0, 0]; me = cpu = null; carBroken = false; cracks = null; sipCd = 8; particles.length = 0; matchStats = { run: 0 }; trickMark = null; lastShot = null;
   setupKickoff(Math.random() < 0.5);          // random first possession
   camX = FW / 2;
 });
@@ -462,10 +462,141 @@ function tryFeint(seq) {
   }
 }
 
+// =====================================================================
+//  Onkel specials: the soda break and the car-window easter egg
+// =====================================================================
+const TESTQ = location.search;
+const SIP_RATE = /[?&]sip/.test(TESTQ) ? 3 : 0.12;          // chance per second while eligible
+const SIP_CD = 20, SIP_DUR = 3.4;
+const LONG_TRY_RATE = /[?&]crash/.test(TESTQ) ? 3 : 0.1;    // Onkel trying a long shot (per second, from far out)
+const CRASH_CHANCE = /[?&]crash/.test(TESTQ) ? 1 : 0.35;    // …and that long shot going horribly wrong
+const CAR_WIN = { x: -180, d: 40, z: 110 };                  // the car's rear window in world coordinates
+let carBroken = false, sipCd = 0, alarmT = 0, cracks = null;
+const particles = [];
+
+function startSip(p) {
+  if (p.sip || sipCd > 0) return;
+  p.sip = { t: 0 }; p.pose = 'sip'; sipCd = SIP_CD; p.vx *= 0.3; p.vd *= 0.3;
+  if (kickoffLock) kickoffLock = false;                        // a sip at kick-off: the ball is fair game!
+}
+function updateSip(p, dt) {                                    // returns true while Onkel is busy drinking
+  if (!p.sip) return false;
+  if (p.stun > 0 || p.dazzle > 0) { p.sip = null; p.pose = null; return false; }
+  const S = p.sip; S.t += dt;
+  accelTo(p, 0, 0, dt * 2);
+  if (S.t > 0.6 && !S.s1) { S.s1 = 1; say(p, '*schlürf*', 1.4); [140, 120, 140].forEach((f, i) => setTimeout(() => beep(f, 0.09, 'sine', 0.2), i * 260)); }
+  if (S.t > SIP_DUR - 0.8 && !S.s2) { S.s2 = 1; say(p, 'Ahhh!', 0.9); setMood(p, 'cheeky', 1.2); }
+  if (S.t >= SIP_DUR) { p.sip = null; p.pose = null; return false; }
+  return true;
+}
+const sipLift = p => { const t = p.sip ? p.sip.t : 0; return clamp(Math.min(t / 0.5, (SIP_DUR - t) / 0.5), 0, 1); };
+function drawCan(p, s, dir) {
+  const k = sipLift(p), e = k * k * (3 - 2 * k);
+  const x = dir * (14 + 6 * e) * s, y = (-24 - 34 * e) * s, w = 8 * s, h = 13 * s;
+  ctx.save(); ctx.translate(x, y); ctx.rotate(-dir * e * 0.9);
+  ctx.fillStyle = '#d62828'; ctx.strokeStyle = '#3a0d0d'; ctx.lineWidth = 1.2 * s;
+  ctx.beginPath(); ctx.roundRect(-w / 2, -h / 2, w, h, 2 * s); ctx.fill(); ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.fillRect(-w / 2, -1.5 * s, w, 3 * s);
+  ctx.fillStyle = '#c9ced3'; ctx.fillRect(-w / 2 + 0.6 * s, -h / 2 - 1.5 * s, w - 1.2 * s, 2 * s);
+  ctx.restore();
+  ctx.fillStyle = '#f2c79b'; ctx.beginPath(); ctx.arc(x - dir * 3 * s, y + 2 * s, 3.6 * s, 0, Math.PI * 2); ctx.fill();   // hand around the can
+}
+
+const canCrash = () => themeReady && TH.car && !carBroken && phase === 'play';
+// Onkel's "long shot" that flies straight into his own car's back window
+function fireWildShot(p) {
+  const T = 1.1, k = 0.3;                                     // flight time, air drag
+  const dx = CAR_WIN.x - ball.x, dd = CAR_WIN.d - ball.d, f = k / (1 - Math.exp(-k * T));
+  ball.vx = dx * f; ball.vd = dd * f;
+  ball.vz = (CAR_WIN.z - ball.z + 0.5 * GRAVITY * T * T) / T;
+  ball.wild = true; ball.wildT = 0;
+  p.fx = Math.sign(dx) || -1; p.fd = 0; p.ng = 0.4; p.kickT = 0.5; owner = null;
+  say(p, 'Weitschuss!', 1.1);
+  beep(380, 0.1, 'triangle', 0.3);
+}
+function noise(dur, vol) {
+  if (!AC) return;
+  const n = Math.floor(AC.sampleRate * dur), buf = AC.createBuffer(1, n, AC.sampleRate), d = buf.getChannelData(0);
+  for (let i = 0; i < n; i++) d[i] = (Math.random() * 2 - 1) * Math.pow(1 - i / n, 2.5);
+  const src = AC.createBufferSource(), g = AC.createGain(); g.gain.value = vol;
+  src.buffer = buf; src.connect(g).connect(AC.destination); src.start();
+}
+function carHit() {
+  ball.wild = false; ball.out = true; carBroken = true; alarmT = 3.6;
+  ball.vx = 140; ball.vd = 20; ball.vz = 120;
+  cracks = [];                                                  // fixed crack pattern (normalised to the window)
+  for (let i = 0; i < 11; i++) { const a = i / 11 * Math.PI * 2 + Math.random() * 0.4; cracks.push([a, 0.55 + Math.random() * 0.6]); }
+  for (let i = 0; i < 26; i++) particles.push({ kind: 'shard', x: CAR_WIN.x + (Math.random() - 0.5) * 30, d: CAR_WIN.d + Math.random() * 10, z: CAR_WIN.z + (Math.random() - 0.5) * 20,
+    vx: (Math.random() - 0.3) * 160, vd: Math.random() * 90, vz: Math.random() * 160, r: 2 + Math.random() * 3.5, rot: Math.random() * 6, life: 4.5 });
+  noise(0.6, 0.6); setTimeout(() => noise(0.25, 0.3), 120);
+  for (let i = 0; i < 6; i++) setTimeout(() => beep(i % 2 ? 950 : 700, 0.28, 'square', 0.07), 300 + i * 300);   // car alarm
+  popup('KLIRR!', CAR_WIN.x, CAR_WIN.d, '#ff5a4f');
+  unlock('secret');
+  startCarCrash();
+}
+function startCarCrash() {
+  nextHumanKicks = true;
+  celeb = { stage: 'party', t: 0, sc: cpu, ot: me, won: false, move: 'carCrash', k: {} };
+  for (const p of [me, cpu]) { resetPose(p); p.slide = 0; p.stun = 0; p.dazzle = 0; p.recover = 0; p.z = 0; p.vz = 0; p.want = 0; p.sip = null; }
+  setMood(cpu, 'shocked', 1.2); setMood(me, 'shocked', 0.8);
+  ball.held = null; owner = null; aim.active = false; endSprint(); ptr.kick = null;
+  msg = 'Oh nein…'; phase = 'celebrate';
+}
+function updateParticles(dt) {
+  for (let i = particles.length - 1; i >= 0; i--) {
+    const q = particles[i]; q.life -= dt;
+    if (q.z > 0 || q.vz > 0) { q.vz -= GRAVITY * dt; q.z += q.vz * dt; q.x += q.vx * dt; q.d += q.vd * dt; q.rot += dt * 8; }
+    if (q.z <= 0) { q.z = 0; q.vz = 0; q.vx *= 0.8; q.vd *= 0.8; }
+    if (q.life <= 0) particles.splice(i, 1);
+  }
+}
+function drawParticles() {
+  for (const q of particles) {
+    const [x, y] = P(q.x, q.d, q.z), s = scaleAt(q.d);
+    ctx.globalAlpha = Math.min(1, q.life / 0.6);
+    if (q.kind === 'shard') {
+      ctx.save(); ctx.translate(x, y); ctx.rotate(q.rot);
+      ctx.fillStyle = 'rgba(200,235,255,.9)'; ctx.strokeStyle = 'rgba(60,90,120,.8)'; ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(0, -q.r * s); ctx.lineTo(q.r * 0.8 * s, q.r * 0.6 * s); ctx.lineTo(-q.r * 0.7 * s, q.r * 0.4 * s); ctx.closePath(); ctx.fill(); ctx.stroke();
+      ctx.restore();
+    } else {                                                    // tear drop
+      ctx.fillStyle = '#5fb4ff';
+      ctx.beginPath(); ctx.arc(x, y, 2.6 * s, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+  ctx.globalAlpha = 1;
+}
+// the car's broken window and blinking hazard light, drawn on top of the car prop
+function drawCarDamage(sx, sy, pw, ph) {
+  if (carBroken && cracks) {
+    const x0 = sx - pw / 2 + pw * 945 / 1200, x1 = sx - pw / 2 + pw * 1140 / 1200, y0 = sy - ph + ph * 125 / 600, y1 = sy - ph + ph * 258 / 600;
+    const cx = x0 + (x1 - x0) * 0.45, cy = y0 + (y1 - y0) * 0.5, R = (x1 - x0) * 0.55;
+    ctx.save();
+    ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.clip();
+    ctx.fillStyle = 'rgba(10,12,18,.75)';                      // the hole
+    ctx.beginPath();
+    cracks.forEach(([a, l], i) => { const px = cx + Math.cos(a) * R * 0.35 * l, py = cy + Math.sin(a) * R * 0.35 * l; i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); });
+    ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = 'rgba(235,245,255,.95)'; ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    for (const [a, l] of cracks) { ctx.moveTo(cx + Math.cos(a) * R * 0.3 * l, cy + Math.sin(a) * R * 0.3 * l); ctx.lineTo(cx + Math.cos(a + 0.08) * R * 1.4 * l, cy + Math.sin(a + 0.08) * R * 1.4 * l); }
+    for (const rr of [0.55, 0.85]) { cracks.forEach(([a, l], i) => { const px = cx + Math.cos(a) * R * rr * l, py = cy + Math.sin(a) * R * rr * l; i ? ctx.lineTo(px, py) : ctx.moveTo(px, py); }); }
+    ctx.stroke();
+    ctx.restore();
+  }
+  if (alarmT > 0 && Math.floor(alarmT * 4) % 2 === 0) {        // hazard lights blinking
+    const lx = sx - pw / 2 + pw * 0.968, ly = sy - ph + ph * 0.6;
+    const g = ctx.createRadialGradient(lx, ly, 0, lx, ly, pw * 0.08);
+    g.addColorStop(0, 'rgba(255,180,40,.95)'); g.addColorStop(1, 'rgba(255,140,0,0)');
+    ctx.fillStyle = g; ctx.beginPath(); ctx.arc(lx, ly, pw * 0.08, 0, Math.PI * 2); ctx.fill();
+  }
+}
+
 // ---------- AI ----------
 function aiThink(p, dt) {
   if (busy(p)) return;
   if (p.dazzle > 0) { accelTo(p, 0, 0, dt * 0.7); return; }
+  if (updateSip(p, dt)) return;                                // Onkel is having a drink…
   if (ball.held === p) {                       // walk the ball out towards the edge of the box
     const tx = FW - PA_DEPTH + 40, td = FD / 2, dx = tx - p.x, dd = td - p.d, l = Math.hypot(dx, dd) || 1;
     p.fx = -1; p.fd = 0;
@@ -494,6 +625,14 @@ function aiThink(p, dt) {
     if (p.stam < 0.25) frac = 0.5;
     if (p.calm > 0) frac = Math.min(frac, 0.25 + 0.75 * (1 - p.calm / 2.5));
     const dGoal = Math.hypot(p.x, p.d - FD / 2);
+    // a cheeky soda break in Mark's half when nobody is close
+    if (p.x < FW / 2 && sipCd <= 0 && dist2(opp, p) > 130 && Math.random() < dt * SIP_RATE) { startSip(p); return; }
+    // now and then a long shot from far out… which can end up in his own car
+    if (dGoal > 380 && dGoal < 820 && Math.random() < dt * LONG_TRY_RATE) {
+      if (canCrash() && Math.random() < CRASH_CHANCE) { fireWildShot(p); return; }
+      const gx = -p.x, gd = FD / 2 - p.d, gl = Math.hypot(gx, gd);
+      p.fx = gx / gl; p.fd = gd / gl; doKick(p, 0.85 + Math.random() * 0.15); return;
+    }
     const shootRate = dGoal < 230 ? 2.5 : dGoal < 330 ? 0.8 : dGoal < 480 ? 0.15 : 0;
     if (Math.random() < dt * shootRate) {
       const gx = -p.x, gd = FD / 2 + (Math.random() - 0.5) * 110 - p.d, gl = Math.hypot(gx, gd);
@@ -660,6 +799,21 @@ function goalFrame() {
   }
 }
 function ballStep(dt, detectGoals) {
+  if (ball.out) {                                              // lying around next to the car: no walls, no goals
+    ball.x += ball.vx * dt; ball.d += ball.vd * dt; ball.z += ball.vz * dt;
+    if (ball.z > 0 || ball.vz > 0) ball.vz -= GRAVITY * dt;
+    if (ball.z < 0) { ball.z = 0; ball.vz = ball.vz < -120 ? -ball.vz * 0.4 : 0; }
+    const fr = Math.exp(-(ball.z > 0 ? 0.3 : 2) * dt); ball.vx *= fr; ball.vd *= fr;
+    return;
+  }
+  if (ball.wild) {
+    ball.wildT += dt;
+    ball.x += ball.vx * dt; ball.d += ball.vd * dt; ball.z += ball.vz * dt; ball.vz -= GRAVITY * dt;
+    const fr = Math.exp(-0.3 * dt); ball.vx *= fr; ball.vd *= fr;
+    if (ball.x < -150 && ball.x > -235 && Math.abs(ball.d - CAR_WIN.d) < 50 && ball.z > 70 && ball.z < 150) { carHit(); return; }
+    if (ball.z <= 0 || ball.wildT > 2.5 || ball.x < -260) { ball.wild = false; ball.x = Math.max(ball.x, BR); ball.z = Math.max(0, ball.z); }
+    return;
+  }
   ball.x += ball.vx * dt; ball.d += ball.vd * dt; ball.z += ball.vz * dt;
   if (ball.z > 0 || ball.vz > 0) ball.vz -= GRAVITY * dt;
   if (ball.z < 0) { ball.z = 0; ball.vz = ball.vz < -120 ? -ball.vz * 0.5 : 0; }
@@ -737,7 +891,7 @@ function startCelebration(team, won) {
   celeb = { stage: 'party', t: 0, sc, ot, won, move: list[Math.floor(Math.random() * list.length)], k: {} };
   if (/[?&]celeb=/.test(location.search)) celeb.move = location.search.match(/celeb=(\w+)/)[1];   // testing aid
   if (sc === me && HUMAN_MOVES.includes(celeb.move)) achCeleb(celeb.move);
-  for (const p of [me, cpu]) { resetPose(p); p.slide = 0; p.stun = 0; p.dazzle = 0; p.recover = 0; p.z = 0; p.vz = 0; p.want = 0; p.stam = Math.max(p.stam, 0.85); }
+  for (const p of [me, cpu]) { resetPose(p); p.slide = 0; p.stun = 0; p.dazzle = 0; p.recover = 0; p.z = 0; p.vz = 0; p.want = 0; p.stam = Math.max(p.stam, 0.85); p.sip = null; }
   setMood(sc, 'celebrate', 30); setMood(ot, 'sad', 30);
   ball.held = null; owner = null; aim.active = false; endSprint(); ptr.kick = null;
   phase = 'celebrate';
@@ -767,6 +921,37 @@ function partyMove(p, T, k, dt) {
       if (p.glasses < 1) { p.glasses = Math.min(1, p.glasses + dt / 0.9); accelTo(p, 0, 0, dt * 2); if (p.glasses >= 1) { p.pose = null; k.t0 = T; } return false; }
       p.cool = true;
       return goTo(p, FW / 2 + (p.ai ? 90 : -90), FD / 2, 0.26, dt) < 20 || T - k.t0 > 4.5;
+    case 'carCrash': {                                          // Onkel's car window… and Mark laughing
+      const m = celeb.ot;
+      if (!k.init) { k.init = 1; say(p, 'NEEEIN!', 1.2); p.pose = 'up'; }
+      if (T < 0.9) { accelTo(p, 0, 0, dt * 2); accelTo(m, 0, 0, dt); return false; }
+      if (!k.arrived) {                                         // run to the car, hands on the head
+        p.free = true; p.boost = 1.3; p.pose = 'up';
+        if (goTo(p, -95, 92, 1, dt) < 18 || T > 3.2) { k.arrived = T; p.vx = p.vd = 0; p.hx = -1; p.legs = 'kneel'; p.pose = 'cry'; setMood(p, 'sad', 10); say(p, 'Mein Auto!!', 1.8); }
+      } else {
+        accelTo(p, 0, 0, dt * 3);
+        if ((k.tear || 0) < T) {                                 // tears
+          k.tear = T + 0.09;
+          for (const sgn of [-1, 1]) particles.push({ kind: 'tear', x: p.x + sgn * 9, d: p.d + 1, z: 52, vx: sgn * (40 + Math.random() * 50), vd: 0, vz: 60 + Math.random() * 60, rot: 0, life: 1.2 });
+        }
+        if (T - k.arrived > 2.2 && !k.sob) { k.sob = 1; say(p, '*schnief* 😭', 1.4); }
+      }
+      // Mark: walks over a bit, points at Onkel and laughs
+      if (T > 0.3) {
+        if (!k.mArr) { m.boost = 1.2; if (goTo(m, 130, 170, 1, dt) < 25 || T > 5) { k.mArr = T; m.boost = 1; } }
+        else {
+          accelTo(m, 0, 0, dt * 2); m.hx = Math.sign(p.x - m.x) || -1; m.pose = 'point'; setMood(m, 'celebrate', 2);
+          m.shake = true;
+          if (!m.say) say(m, ['Hahaha!', 'Hihihi!', 'Hahaha!'][Math.floor(T) % 3], 0.9);
+          if (Math.floor(T * 2.5) !== k.hop) { k.hop = Math.floor(T * 2.5); jump(m, 110); }
+        }
+      }
+      if (k.arrived && T - k.arrived > 4 && k.mArr && T - k.mArr > 2.5) {
+        m.pose = null; m.shake = false; m.say = null; p.pose = null; p.legs = null; p.boost = 1; p.say = null;
+        msg = ''; return true;                                   // (Onkel stays "free" until he is back on the pitch)
+      }
+      return false;
+    }
     case 'jumpPunch':                                           // CPU: run a few metres, jump, swing the arm
       if (!k.init) { k.init = 1; k.tx = clamp(p.x + toCentre * 170, 60, FW - 60); k.td = clamp(p.d + 30, 60, FD - 60); k.st = 0; }
       if (k.st === 0) { if (goTo(p, k.tx, k.td, 1, dt) < 30 || T > 2) { k.st = 1; jump(p, 400); p.pose = 'punch'; k.tl = T; } return false; }
@@ -835,10 +1020,11 @@ function updateCelebration(dt) {
   }
   if (C.stage === 'party') {
     if (C.t > 2.2) msg = '';
-    accelTo(ot, 0, 0, dt);                                     // the other one stands there, gutted
-    if (partyMove(sc, C.t, C.k, dt)) { resetPose(sc); sc.z = 0; C.stage = 'walk'; C.t = 0; }
+    if (C.move !== 'carCrash') accelTo(ot, 0, 0, dt);         // the other one stands there, gutted
+    if (partyMove(sc, C.t, C.k, dt)) { const fr = sc.free; resetPose(sc); sc.free = fr; sc.z = 0; C.stage = 'walk'; C.t = 0; }
   } else if (C.stage === 'walk') {
     // both head for the centre spot, each stopping just inside his own half
+    for (const p of [me, cpu]) if (p.free && p.x > 10 && p.d >= 0) p.free = false;
     const c = FW / 2, arm = 32;                                  // one arm length each side of the line
     const a = goTo(me, c - arm, FD / 2, 0.6, dt), b = goTo(cpu, c + arm, FD / 2, 0.6, dt);
     if ((a < 10 && b < 10) || C.t > 8) {
@@ -852,7 +1038,7 @@ function updateCelebration(dt) {
     if (C.t > 0.9) {
       resetPose(me); resetPose(cpu);
       if (C.won) { phase = 'over'; phaseT = 3; msg = score[0] > score[1] ? 'GEWONNEN! 🏆' : 'Onkel gewinnt – Revanche?'; return; }
-      Object.assign(ball, { x: FW / 2, d: FD / 2, z: 420, vx: 0, vd: 0, vz: 0, held: null });
+      Object.assign(ball, { x: FW / 2, d: FD / 2, z: 420, vx: 0, vd: 0, vz: 0, held: null, wild: false, out: false });
       C.stage = 'drop'; C.t = 0;
     }
   } else if (C.stage === 'drop') {
@@ -880,7 +1066,7 @@ function updateCamera(dt) {
   const extra = themeReady ? 160 : 0;          // backyard: show a bit more of the yard beside the goals
   const lo = -GOAL_DEPTH - 70 - extra + halfNear, hi = FW + GOAL_DEPTH + 70 + extra - halfNear;
   let focus = ball.x * 0.75 + me.x * 0.25;
-  if (phase === 'celebrate' && celeb) focus = celeb.stage === 'party' ? celeb.sc.x : celeb.stage === 'drop' ? FW / 2 : (me.x + cpu.x) / 2;
+  if (phase === 'celebrate' && celeb) focus = celeb.stage === 'party' ? (celeb.move === 'carCrash' ? -60 : celeb.sc.x) : celeb.stage === 'drop' ? FW / 2 : (me.x + cpu.x) / 2;
   const target = clamp(focus, lo, hi);
   camX += ((lo > hi ? FW / 2 : target) - camX) * Math.min(1, dt * 3);
 }
@@ -889,10 +1075,10 @@ function update(dt) {
   if (phase === 'menu' || !me) return;
   if (phase === 'ready') {
     phaseT -= dt;
-    if (phaseT <= 0) { phase = 'play'; msg = ''; }
+    if (phaseT <= 0) { phase = 'play'; msg = ''; if (kicker === cpu && sipCd <= 0 && Math.random() < (/[?&]sip/.test(TESTQ) ? 1 : 0.25)) startSip(cpu); }
   } else if (phase === 'play') {
     feint.cd = Math.max(0, feint.cd - dt);
-    gameClock += dt;
+    gameClock += dt; sipCd = Math.max(0, sipCd - dt);
     if (trickMark && (owner === cpu || ball.held === cpu)) trickMark.clean = false;   // the CPU touched it: no longer counts
     if (aim.active && (me.stun > 0 || me.slide > 0 || (owner !== me && dist2(me, ball) > KICK_R * 2))) aim.active = false;
     humanInput(dt); aiThink(cpu, dt);
@@ -911,6 +1097,7 @@ function update(dt) {
     }
   }
   if (!sprint.active) sprint.cd = Math.max(0, sprint.cd - dt);
+  updateParticles(dt); alarmT = Math.max(0, alarmT - dt);
   updateCamera(dt);
 }
 
@@ -920,7 +1107,7 @@ function inKeeperZone(p) {
   return Math.abs(p.x - gx) < PA_DEPTH && Math.abs(p.d - FD / 2) < PA_HALF;
 }
 function keeperCheck() {
-  if (ball.held || owner) return;
+  if (ball.held || owner || ball.wild) return;
   for (const p of [me, cpu]) {
     if (p.stun > 0 || p.slide > 0 || p.ng > 0 || p.dazzle > 0 || !inKeeperZone(p)) continue;
     if (!(p.ai ? ball.vx > 30 : ball.vx < -30)) continue;          // only shots coming at your goal
@@ -1100,6 +1287,7 @@ function drawProps(fg = false) {
     ctx.fillStyle = 'rgba(0,0,0,.25)';
     ctx.beginPath(); ctx.ellipse(sx, sy, pw * 0.35, pw * 0.08, 0, 0, Math.PI * 2); ctx.fill();
     ctx.drawImage(img, sx - pw / 2, sy - ph, pw, ph);
+    if (name === 'car') drawCarDamage(sx, sy, pw, ph);
   }
 }
 // Orange training cones mark the goal posts (the goal frame itself is drawn "ghosted").
@@ -1225,7 +1413,7 @@ function drawPlayer(p) {
   const shrink = 1 / (1 + z / 200);
   ctx.fillStyle = 'rgba(0,0,0,.25)';
   ctx.beginPath(); ctx.ellipse(sx, sy, PR * s * shrink, PR * s * 0.45 * shrink, 0, 0, Math.PI * 2); ctx.fill();
-  ctx.save(); ctx.translate(sx, sy - z * s);
+  ctx.save(); ctx.translate(sx + (p.shake ? Math.sin(performance.now() / 35) * 1.6 * s : 0), sy - z * s);
   const dir = p.hx >= 0 ? 1 : -1;
   if (p.slide > 0) ctx.rotate(dir * 1.1);
   if (p.spin != null) ctx.scale(Math.abs(p.spin) < 0.12 ? 0.12 * Math.sign(p.spin || 1) : p.spin, 1);   // half turn in the air
@@ -1250,8 +1438,14 @@ function drawPlayer(p) {
   ctx.fillStyle = p.shorts || '#333'; ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1.2 * s;   // shorts
   ctx.beginPath(); ctx.roundRect((-9.5 + lean * 0.3) * s, -21 * s, 19 * s, 9 * s, 3 * s); ctx.fill(); ctx.stroke();
   ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s;
-  drawArms(p, s, dir, swing);
-  drawHead(p, s, dir, lean);
+  if (p.pose === 'cry') { drawHead(p, s, dir, lean); drawArms(p, s, dir, swing); }
+  else { drawArms(p, s, dir, swing); drawHead(p, s, dir, lean); }
+  if (p.sip) drawCan(p, s, dir);
+  if (p.pose === 'point') {                                   // the pointing finger
+    const sg = Math.sign((p === me ? cpu : me).x - p.x) || dir;
+    ctx.strokeStyle = '#f2c79b'; ctx.lineWidth = 2.4 * s; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(sg * 38 * s, -40 * s); ctx.lineTo(sg * 45 * s, -41 * s); ctx.stroke();
+  }
   ctx.restore();
   // stamina bar above the head
   const bw = 34 * s, by = sy - (HEAD_H + 40 + z) * s;
@@ -1388,12 +1582,15 @@ const POSE_HANDS = {
   plane: d => [[-52, -31], [52, -27]],           // wings stick out well past the big head
   punch: d => [[d * 26, -100], [-d * 9, -22]],
   siu: d => [[-19, -17], [19, -17]],
+  cry: d => [[-9, -66], [9, -66]],                 // hands over the eyes (drawn over the head)
+  sip: d => [[-d * 4, -20], [-d * 4, -20]],
 };
 function drawArms(p, s, dir, swing) {
   const mode = p.pose || armMode(p), o = p === me ? cpu : me;
   let hands;
   if (POSE_HANDS[mode]) hands = POSE_HANDS[mode](dir);
   else if (mode === 'glasses') { const g = glassesPos(p, s, dir); hands = [[g.x / s - dir * 8, g.y / s + 4], [-dir * 4, -20]]; }
+  else if (mode === 'point') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 38, -40], [-sg * 6, -24]]; }
   else if (mode === 'fist') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 32, -30], [-sg * 4, -20]]; }
   else if (mode === 'hold') hands = [[dir * 12, -30], [dir * 12, -25]];
   else if (mode === 'push') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 21, -27], [-sg * 4, -20]]; }
@@ -1484,6 +1681,7 @@ function render() {
     if (it === ball) drawBall();
     else { if (!it.ai && !aim.active) drawArrow(it); drawPlayer(it); }
   }
+  drawParticles();
   drawAim();
   if (themeReady) drawProps(true);
   drawPopups();
