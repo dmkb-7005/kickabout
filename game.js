@@ -56,7 +56,7 @@ let W, H, F, A, HY, camX = FW / 2;
 const btnK = { r: 90, label: 'SCHUSS', col: '#ffd23f' };
 const btnS = { r: 54, label: 'SPRINT', col: '#7ee081' };
 const btnP = { w: 70 };                                        // pause (whiteboard square, top right)
-const NAMES = { human: 'Mark', cpu: 'Onkel' };
+const NAMES = { human: 'Du', cpu: 'Onkel' };          // a skin pack can rename both (pack.json)
 const UI_FONT = "'Baloo 2', system-ui, sans-serif", MARKER_FONT = "'Permanent Marker', 'Comic Sans MS', 'Baloo 2', system-ui, sans-serif";
 const ICONS = {};
 for (const n of ['kick', 'tackle', 'bolt', 'bolt_on', 'nervous', 'skip']) { const im = new Image(); im.src = `img/icon_${n}.svg`; ICONS[n] = im; }
@@ -98,11 +98,71 @@ const dist2 = (a, b) => Math.hypot(a.x - b.x, a.d - b.d);
 // ---------- Skins (big cartoon heads) ----------
 // Human player's head comes from skin/<expression>.png; if missing, a drawn cartoon face is used.
 const EXPRESSIONS = ['neutral', 'determined', 'celebrate', 'shocked', 'dizzy', 'sad', 'cheeky'];
-// skin/        -> CPU player (the uncle)
-// skin-nephew/ -> human player (optional; drawn cartoon face if missing)
+// Faces come from a private "skin pack" (a ZIP) that is loaded once on the start screen and kept
+// in the browser (IndexedDB). Nothing personal lives in the public repo. Without a pack the game
+// draws cartoon faces. ZIP layout (folder names are flexible, see SKIN_DIRS):
+//   onkel/neutral.png … cheeky.png   (the CPU)      mark/neutral.png …   (the human player)
+//   pack.json (optional): {"human": "Mark", "cpu": "Onkel"}
 const SKINS = { cpu: {}, human: {} };
-for (const [who, dir] of [['cpu', 'skin/'], ['human', 'skin-nephew/']])
-  for (const n of EXPRESSIONS) { const im = new Image(); im.onload = () => { SKINS[who][n] = im; }; im.src = dir + n + '.png'; }
+const SKIN_DIRS = { cpu: ['onkel', 'uncle', 'cpu'], human: ['nephew', 'neffe', 'spieler', 'player', 'human', 'mark'] };
+const SKIN_DB = 'kickabout-skins', SKIN_STORE = 'pack';
+function skinDb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(SKIN_DB, 1);
+    r.onupgradeneeded = () => r.result.createObjectStore(SKIN_STORE);
+    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+  });
+}
+async function skinDbDo(mode, fn) {
+  const db = await skinDb();
+  return new Promise((res, rej) => {
+    const tx = db.transaction(SKIN_STORE, mode), st = tx.objectStore(SKIN_STORE), out = fn(st);
+    tx.oncomplete = () => res(out && out.result); tx.onerror = () => rej(tx.error);
+  });
+}
+function blobToImage(blob) {
+  return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = URL.createObjectURL(blob); });
+}
+async function applySkinPack(pack) {                    // pack = { names, cpu: {mood: Blob}, human: {…} }
+  for (const who of ['cpu', 'human']) {
+    SKINS[who] = {};
+    for (const [mood, blob] of Object.entries(pack[who] || {})) { try { SKINS[who][mood] = await blobToImage(blob); } catch (_) {} }
+  }
+  if (pack.names) { if (pack.names.human) NAMES.human = pack.names.human; if (pack.names.cpu) NAMES.cpu = pack.names.cpu; }
+}
+function parseSkinZip(buf) {
+  const files = fflate.unzipSync(new Uint8Array(buf));
+  const pack = { cpu: {}, human: {}, names: null };
+  for (const [path, data] of Object.entries(files)) {
+    const parts = path.replace(/\\/g, '/').toLowerCase().split('/').filter(Boolean);
+    if (!parts.length || parts.some(x => x.startsWith('__macosx') || x.startsWith('.'))) continue;
+    const file = parts[parts.length - 1];
+    if (file === 'pack.json') { try { pack.names = JSON.parse(new TextDecoder().decode(data)); } catch (_) {} continue; }
+    const m = file.match(/^([a-z]+)\.(png|webp|jpe?g)$/);
+    if (!m || !EXPRESSIONS.includes(m[1])) continue;
+    const who = Object.keys(SKIN_DIRS).find(w => parts.slice(0, -1).some(dir => SKIN_DIRS[w].some(n => dir.startsWith(n))));
+    if (!who) continue;
+    const big = parts.some(x => /^\d{3,4}x\d{3,4}$/.test(x) && parseInt(x) > 500);   // prefer the 400x560 versions
+    if (pack[who][m[1]] && big) continue;
+    pack[who][m[1]] = new Blob([data], { type: 'image/' + (m[2] === 'jpg' ? 'jpeg' : m[2]) });
+  }
+  if (!Object.keys(pack.cpu).length && !Object.keys(pack.human).length) throw new Error('Keine passenden Bilder im ZIP gefunden.');
+  return pack;
+}
+async function loadSkinZip(file) {
+  const pack = parseSkinZip(await file.arrayBuffer());
+  await applySkinPack(pack);
+  try { await skinDbDo('readwrite', st => st.put(pack, 'current')); } catch (_) {}
+  try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (_) {}
+  return pack;
+}
+async function clearSkins() {
+  SKINS.cpu = {}; SKINS.human = {}; NAMES.human = 'Du'; NAMES.cpu = 'Onkel';
+  try { await skinDbDo('readwrite', st => st.delete('current')); } catch (_) {}
+}
+const skinsReady = (async () => {
+  try { const pack = await skinDbDo('readonly', st => st.get('current')); if (pack) await applySkinPack(pack); } catch (_) {}
+})();
 const HEAD_W = 52, HEAD_H = 73;          // world units – deliberately big so expressions read on a tablet
 
 function setMood(p, m, t) { p.mood = m; p.moodT = t; }
@@ -333,6 +393,30 @@ function release(e) {
 cv.addEventListener('pointerup', release);
 cv.addEventListener('pointercancel', release);
 cv.addEventListener('contextmenu', e => e.preventDefault());
+
+// ---------- Start screen (whiteboard): controls, skin pack, start ----------
+function updateSkinUI() {
+  const faces = document.getElementById('skinFaces'), msgEl = document.getElementById('skinMsg'), clr = document.getElementById('skinClear');
+  faces.innerHTML = '';
+  const have = ['human', 'cpu'].filter(w => SKINS[w].neutral);
+  for (const w of have) { const im = document.createElement('img'); im.src = SKINS[w].neutral.src; im.alt = NAMES[w]; faces.appendChild(im); }
+  const nh = Object.keys(SKINS.human).length, nc = Object.keys(SKINS.cpu).length;
+  msgEl.textContent = have.length
+    ? `Skins geladen: ${NAMES.human} (${nh}/7) gegen ${NAMES.cpu} (${nc}/7) ✓`
+    : 'Keine Skins geladen – es wird mit Comic-Gesichtern gespielt.';
+  clr.hidden = !have.length;
+}
+skinsReady.then(updateSkinUI);
+document.getElementById('skinBtn').addEventListener('click', () => document.getElementById('skinFile').click());
+document.getElementById('skinFile').addEventListener('change', async e => {
+  const f = e.target.files && e.target.files[0]; e.target.value = '';
+  if (!f) return;
+  const msgEl = document.getElementById('skinMsg');
+  msgEl.textContent = 'Lade Skin-Paket…';
+  try { await loadSkinZip(f); updateSkinUI(); }
+  catch (err) { msgEl.textContent = '⚠ ' + (err && err.message ? err.message : 'Das ZIP konnte nicht gelesen werden.'); }
+});
+document.getElementById('skinClear').addEventListener('click', async () => { await clearSkins(); updateSkinUI(); });
 
 document.getElementById('go').addEventListener('click', async () => {
   try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); AC.resume(); } catch (_) {}
