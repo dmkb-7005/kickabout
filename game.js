@@ -163,7 +163,9 @@ async function clearSkins() {
 const skinsReady = (async () => {
   try { const pack = await skinDbDo('readonly', st => st.get('current')); if (pack) await applySkinPack(pack); } catch (_) {}
 })();
-const HEAD_W = 52, HEAD_H = 73;          // world units – deliberately big so expressions read on a tablet
+const HEAD_W = 52, HEAD_H = 73;
+const HEAD_SCALE = { human: 0.8, cpu: 1 };          // Mark's head is 20 % smaller than Onkel's
+const headK = p => HEAD_SCALE[p.ai ? 'cpu' : 'human'];          // world units – deliberately big so expressions read on a tablet
 
 function setMood(p, m, t) { p.mood = m; p.moodT = t; }
 function moodOf(p) {
@@ -1532,7 +1534,7 @@ function drawPlayer(p) {
   }
   ctx.restore();
   // stamina bar above the head
-  const bw = 34 * s, by = sy - (HEAD_H + 40 + z) * s;
+  const bw = 34 * s, by = sy - (HEAD_H * headK(p) + 40 + z) * s;
   ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(sx - bw / 2 - 1, by - 1, bw + 2, 6 * s + 2);
   ctx.fillStyle = p.stam > 0.5 ? '#5ad65a' : p.stam > 0.25 ? '#ffd23f' : '#ff5a4f';
   ctx.fillRect(sx - bw / 2, by, bw * p.stam, 6 * s);
@@ -1551,8 +1553,9 @@ function drawPlayer(p) {
 function glassesPos(p, s, dir) {
   const lean = (1 - p.stam) * 4 * dir, bob = p.spd > 20 ? Math.abs(Math.sin(p.run)) * 1.5 : 0, bottom = (-32 - bob) * s;
   const skin = SKINS[p.ai ? 'cpu' : 'human'].neutral;
-  const eye = skin ? { x: lean * s, y: bottom - HEAD_H * s * (1 - 0.468), w: HEAD_W * s * 0.675 }
-                   : { x: (lean + dir * 3) * s, y: bottom - 25 * s - 2 * s, w: 40 * s };
+  const hk = headK(p);
+  const eye = skin ? { x: lean * s, y: bottom - HEAD_H * s * hk * 0.47, w: HEAD_W * s * hk * 0.66 }
+                   : { x: (lean + dir * 3) * s, y: bottom - 27 * s * hk, w: 40 * s * hk };
   const t = clamp(p.glasses || 0, 0, 1), e = t * t * (3 - 2 * t);
   const from = { x: dir * 34 * s, y: -30 * s, w: eye.w * 0.6 };              // starts at hip height in the hand
   return { x: from.x + (eye.x - from.x) * e, y: from.y + (eye.y - from.y) * e, w: from.w + (eye.w - from.w) * e };
@@ -1567,12 +1570,13 @@ function drawHead(p, s, dir, lean) {
   const bob = p.spd > 20 ? Math.abs(Math.sin(p.run)) * 1.5 : 0;
   const cx = lean * s, bottom = (-32 - bob) * s;              // neck sits on the shoulders
   if (img) {
-    const w = HEAD_W * s, h = HEAD_H * s;
+    const w = HEAD_W * s * headK(p), h = HEAD_H * s * headK(p);
     ctx.drawImage(img, cx - w / 2, bottom - h, w, h);
     drawGlasses(p, s, dir);
     return;
   }
   // drawn cartoon head (CPU, or the human when no skin is present)
+  const hk = headK(p); s *= hk;                                  // (scales the drawn cartoon head too)
   const r = 21 * s, cy = bottom - r - 4 * s, fx = cx + dir * 3 * s;
   ctx.fillStyle = '#f2c79b'; ctx.strokeStyle = '#333'; ctx.lineWidth = 1.5 * s;
   ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
@@ -1605,7 +1609,7 @@ function drawHead(p, s, dir, lean) {
   else if (mood === 'determined') { ctx.moveTo(fx - 5 * s, my); ctx.lineTo(fx + 5 * s, my); ctx.stroke(); }
   else if (mood === 'cheeky') { ctx.arc(fx, my - 2 * s, 5 * s, 0.2, Math.PI - 0.6); ctx.stroke(); }
   else { ctx.arc(fx, my - 3 * s, 5 * s, 0.4, Math.PI - 0.4); ctx.stroke(); }
-  drawGlasses(p, s, dir);
+  drawGlasses(p, s / hk, dir);
 }
 
 // Cartoon blur-loop legs while sprinting (classic "legs become a whirl" effect)
@@ -1814,7 +1818,7 @@ function drawBubbles() {
   for (const p of [me, cpu]) {
     if (!p || !p.say) continue;
     const [sx, sy] = P(p.x, p.d), s = scaleAt(p.d);
-    const fs = Math.max(18, 22 * s), y = Math.max(fs * 1.7 + 72, sy - ((p.z || 0) + HEAD_H + 62) * s);
+    const fs = Math.max(18, 22 * s), y = Math.max(fs * 1.7 + 72, sy - ((p.z || 0) + HEAD_H * headK(p) + 62) * s);
     ctx.font = `900 ${fs}px system-ui`;
     const w = ctx.measureText(p.say.txt).width + fs * 1.1, h = fs * 1.7;
     const bx = clamp(sx - w / 2, 8, W - w - 8);
