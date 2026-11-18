@@ -96,7 +96,6 @@ const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const dist2 = (a, b) => Math.hypot(a.x - b.x, a.d - b.d);
 
 // ---------- Skins (big cartoon heads) ----------
-// Human player's head comes from skin/<expression>.png; if missing, a drawn cartoon face is used.
 const EXPRESSIONS = ['neutral', 'determined', 'celebrate', 'shocked', 'dizzy', 'sad', 'cheeky'];
 // Faces come from a private "skin pack" (a ZIP) that is loaded once on the start screen and kept
 // in the browser (IndexedDB). Nothing personal lives in the public repo. Without a pack the game
@@ -645,6 +644,9 @@ function drawParticles() {
       ctx.fillStyle = 'rgba(200,235,255,.9)'; ctx.strokeStyle = 'rgba(60,90,120,.8)'; ctx.lineWidth = 1;
       ctx.beginPath(); ctx.moveTo(0, -q.r * s); ctx.lineTo(q.r * 0.8 * s, q.r * 0.6 * s); ctx.lineTo(-q.r * 0.7 * s, q.r * 0.4 * s); ctx.closePath(); ctx.fill(); ctx.stroke();
       ctx.restore();
+    } else if (q.kind === 'dust') {                             // stamping dust puff
+      ctx.fillStyle = 'rgba(225,212,185,.75)';
+      ctx.beginPath(); ctx.arc(x, y, (2.5 + (0.5 - q.life) * 9) * s, 0, Math.PI * 2); ctx.fill();
     } else {                                                    // tear drop
       ctx.fillStyle = '#5fb4ff';
       ctx.beginPath(); ctx.arc(x, y, 2.6 * s, 0, Math.PI * 2); ctx.fill();
@@ -931,10 +933,13 @@ function goal(team) {
   owner = null;
   nextHumanKicks = team === 1;                        // whoever conceded kicks off
   const won = score[team] >= MATCH_GOALS;
+  const scorer = team === 0 ? me : cpu;               // (checked before achGoal clears lastShot)
+  const longGoal = !!(lastShot && lastShot.by === scorer &&
+    Math.hypot((team === 0 ? FW : 0) - lastShot.x, FD / 2 - lastShot.d) * M_PER_UNIT >= LONG_GOAL_M);
   achGoal(team);
   if (won) achMatchEnd(team === 0);
   msg = won ? (team === 0 ? 'GEWONNEN! 🏆' : 'Onkel gewinnt – Revanche?') : (team === 0 ? 'TOOOR! 🎉' : 'Onkel trifft!');
-  startCelebration(team, won);
+  startCelebration(team, won, longGoal);
   if (team === 0) [523, 659, 784, 1046].forEach((f, i) => setTimeout(() => beep(f, 0.15, 'square', 0.12), i * 110));
   else beep(150, 0.4, 'sawtooth', 0.1);
 }
@@ -957,8 +962,15 @@ const SUNGLASSES = new Image(); SUNGLASSES.src = 'img/sunglasses.png';
 const HUMAN_MOVES = ['toorRun', 'ronaldo', 'kneeSlide', 'runHouse', 'basic'];
 let celeb = null, lastMsg = '', msgStart = 0;
 
+// Conceding reactions: usually the plain "gutted" stance; now and then a custom one.
+const REACT_CHANCE = 0.3;                      // chance of a custom reaction per goal (the car crash is rarer)
+const LONG_GOAL_M = 6;                         // a goal from ≥ 6 m is a long shot → the conceder looks surprised
+const CPU_REACTS = ['mann', 'mist'];           // Onkel: "Mann!!!" (angry), "Mist!" (sad)
+const HUMAN_REACTS = ['zaehltNicht', 'warAus']; // Mark: "Zählt nicht!" (runs around), "War aus!" (stomps)
+const REACT_MIN = { mann: 2.4, mist: 2.2, zaehltNicht: 3.2, warAus: 3.0, surprised: 1.8 };   // keep the party going at least this long
+
 function say(p, txt, t) { p.say = { txt, t }; }
-function resetPose(p) { p.cool = false; p.pose = null; p.legs = null; p.spin = null; p.free = false; p.hidden = false; p.kneeSlide = false; p.boost = 1; }
+function resetPose(p) { p.cool = false; p.pose = null; p.legs = null; p.spin = null; p.free = false; p.hidden = false; p.kneeSlide = false; p.boost = 1; p.stomp = null; }
 function goTo(p, tx, td, frac, dt) {
   const dx = tx - p.x, dd = td - p.d, l = Math.hypot(dx, dd);
   if (l > 3) {
@@ -971,10 +983,20 @@ function goTo(p, tx, td, frac, dt) {
 function jump(p, vz) { if ((p.z || 0) <= 0) { p.vz = vz; p.z = 0.01; } }
 const airborne = p => (p.z || 0) > 0;
 
-function startCelebration(team, won) {
+function pickReaction(ot, longGoal) {
+  const list = ot.ai ? CPU_REACTS : HUMAN_REACTS;
+  const forced = TESTQ.match(/[?&]react=(\w+)/);                // testing aid: ?react=mann|mist|zaehltNicht|warAus|surprised
+  if (forced && (list.includes(forced[1]) || forced[1] === 'surprised')) return forced[1];
+  if (longGoal) return 'surprised';
+  return Math.random() < REACT_CHANCE ? list[Math.floor(Math.random() * list.length)] : null;
+}
+
+function startCelebration(team, won, longGoal = false) {
   const sc = team === 0 ? me : cpu, ot = sc === me ? cpu : me;
   const list = sc === me ? HUMAN_MOVES : CPU_MOVES;
-  celeb = { stage: 'party', t: 0, sc, ot, won, move: list[Math.floor(Math.random() * list.length)], k: {} };
+  const react = pickReaction(ot, longGoal);
+  celeb = { stage: 'party', t: 0, sc, ot, won, move: list[Math.floor(Math.random() * list.length)], k: {},
+            react, rk: {}, rMin: REACT_MIN[react] || 0, scDone: false };
   if (/[?&]celeb=/.test(location.search)) celeb.move = location.search.match(/celeb=(\w+)/)[1];   // testing aid
   if (sc === me && HUMAN_MOVES.includes(celeb.move)) achCeleb(celeb.move);
   for (const p of [me, cpu]) { resetPose(p); p.slide = 0; p.stun = 0; p.dazzle = 0; p.recover = 0; p.z = 0; p.vz = 0; p.want = 0; p.stam = Math.max(p.stam, 0.85); p.sip = null; }
@@ -1091,6 +1113,53 @@ function partyMove(p, T, k, dt) {
   }
 }
 
+// --- the conceder's reaction while the scorer celebrates
+function dust(p) {
+  for (let i = 0; i < 5; i++) particles.push({ kind: 'dust', x: p.x + (Math.random() - 0.5) * 16, d: p.d + 2, z: 1,
+    vx: (Math.random() - 0.5) * 90, vd: (Math.random() - 0.5) * 30, vz: 40 + Math.random() * 50, rot: 0, life: 0.5 });
+}
+function reactMove(p, T, k, dt) {
+  switch (celeb.react) {
+    case 'mann':                                                // Onkel: angry, fists down, one big stamp
+      if (!k.init) { k.init = 1; setMood(p, 'determined', 30); }
+      accelTo(p, 0, 0, dt * 2);
+      if (T > 0.35 && !k.said) { k.said = 1; say(p, 'Mann!!!', 2); p.pose = 'fistsDown'; jump(p, 120); }
+      if (k.said && !k.landed && !airborne(p) && T > 0.5) { k.landed = 1; dust(p); beep(90, 0.08, 'triangle', 0.25); }
+      return;
+    case 'mist':                                                // Onkel: sad, hands on the head
+      if (!k.init) { k.init = 1; setMood(p, 'sad', 30); }
+      accelTo(p, 0, 0, dt * 2);
+      if (T > 0.45 && !k.said) { k.said = 1; say(p, 'Mist!', 1.8); p.pose = 'head'; }
+      return;
+    case 'surprised':                                           // long-shot goal: jaw drops
+      if (!k.init) { k.init = 1; setMood(p, 'shocked', 30); jump(p, 90); }
+      accelTo(p, 0, 0, dt * 2);
+      return;
+    case 'zaehltNicht':                                         // Mark: "Zählt nicht!" and running around in a panic
+      if (!k.init) { k.init = 1; setMood(p, 'sad', 30); k.next = 0; k.n = 0; k.cx = p.x; k.cd = p.d; }
+      if (T < 0.3) { accelTo(p, 0, 0, dt); return; }
+      if (!p.say) say(p, k.n++ % 2 ? 'Zählt nicht!!!' : 'Zählt nicht! Zählt nicht!', 1.4);
+      if (T > k.next) { k.next = T + 0.35 + Math.random() * 0.3;
+        k.tx = clamp(k.cx + (Math.random() - 0.5) * 260, 60, FW - 60); k.td = clamp(k.cd + (Math.random() - 0.5) * 200, 40, FD - 40); }
+      p.pose = Math.floor(T * 5) % 2 ? 'up' : 'v';             // flailing arms
+      goTo(p, k.tx, k.td, 1, dt);
+      return;
+    case 'warAus': {                                            // Mark: "War aus!", angry face, stamping his feet
+      if (!k.init) { k.init = 1; setMood(p, 'determined', 30); k.n = 0; k.step = -1; }
+      accelTo(p, 0, 0, dt * 3);
+      if (T < 0.3) return;
+      if (!p.say) say(p, k.n++ % 2 ? 'Der Ball war aus!' : 'War aus! War aus!', 1.5);
+      p.pose = 'fistsDown';
+      const ph = (T - 0.3) * 3.2, step = Math.floor(ph), f = ph - step;   // ~3 stamps a second, alternating feet
+      p.stomp = { foot: step % 2, lift: Math.sin(f * Math.PI) };
+      if (step !== k.step) { k.step = step; if (step > 0) { dust(p); beep(80 + Math.random() * 20, 0.06, 'triangle', 0.18); } }
+      return;
+    }
+    default:                                                    // the usual: stands there, gutted
+      accelTo(p, 0, 0, dt);
+  }
+}
+
 function kickoffSpots() {
   const c = FW / 2, near = PR + BR + 2;
   return nextHumanKicks ? { me: [c - near, FD / 2], cpu: [c + 230, FD / 2] } : { me: [c - 230, FD / 2], cpu: [c + near, FD / 2] };
@@ -1106,8 +1175,15 @@ function updateCelebration(dt) {
   }
   if (C.stage === 'party') {
     if (C.t > 2.2) msg = '';
-    if (C.move !== 'carCrash') accelTo(ot, 0, 0, dt);         // the other one stands there, gutted
-    if (partyMove(sc, C.t, C.k, dt)) { const fr = sc.free; resetPose(sc); sc.free = fr; sc.z = 0; C.stage = 'walk'; C.t = 0; }
+    if (C.move !== 'carCrash') reactMove(ot, C.t, C.rk, dt);  // the other one: gutted, or a custom reaction
+    if (!C.scDone && partyMove(sc, C.t, C.k, dt)) { C.scDone = true; const fr = sc.free; resetPose(sc); sc.free = fr; sc.z = 0; }
+    if (C.scDone) {
+      if (C.t < C.rMin) accelTo(sc, 0, 0, dt);                 // the reaction isn't finished yet: wait for it
+      else {
+        if (C.move !== 'carCrash') { resetPose(ot); ot.say = null; }
+        C.stage = 'walk'; C.t = 0;
+      }
+    }
   } else if (C.stage === 'walk') {
     // both head for the centre spot, each stopping just inside his own half
     for (const p of [me, cpu]) if (p.free && p.x > 10 && p.d >= 0) p.free = false;
@@ -1510,21 +1586,22 @@ function drawPlayer(p) {
   if (sprinting(p) && p.spd > 30) drawWheel(s, p.run * 3, dir);
   else if (p.legs === 'kneel' || p.legs === 'apart') drawSpecialLegs(p, s, dir);
   else {
-    for (const [hx, fx] of [[-3, -3 + swing], [3, 3 - swing]]) {           // long white stockings
+    [[-3, -3 + swing], [3, 3 - swing]].forEach(([hx, fx], i) => {           // long white stockings
+      const fy = -1 - (p.stomp && p.stomp.foot === i ? p.stomp.lift * 12 : 0);   // stamping: one foot lifted
       ctx.strokeStyle = '#3a3a3a'; ctx.lineWidth = 6.5 * s;
-      ctx.beginPath(); ctx.moveTo(hx * s, -14 * s); ctx.lineTo(fx * s, -1 * s); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(hx * s, -14 * s); ctx.lineTo(fx * s, fy * s); ctx.stroke();
       ctx.strokeStyle = '#f7f7f2'; ctx.lineWidth = 4.3 * s;
-      ctx.beginPath(); ctx.moveTo(hx * s, -14 * s); ctx.lineTo(fx * s, -1 * s); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(hx * s, -14 * s); ctx.lineTo(fx * s, fy * s); ctx.stroke();
       ctx.fillStyle = '#222';                                               // boots
-      ctx.beginPath(); ctx.ellipse((fx + dir * 1.5) * s, -0.5 * s, 4.2 * s, 2.4 * s, 0, 0, Math.PI * 2); ctx.fill();
-    }
+      ctx.beginPath(); ctx.ellipse((fx + dir * 1.5) * s, (fy + 0.5) * s, 4.2 * s, 2.4 * s, 0, 0, Math.PI * 2); ctx.fill();
+    });
   }
   ctx.fillStyle = p.col;
   ctx.beginPath(); ctx.roundRect((-9 + lean * 0.4) * s, -38 * s, 18 * s, 20 * s, 5 * s); ctx.fill();
   ctx.fillStyle = p.shorts || '#333'; ctx.strokeStyle = 'rgba(0,0,0,.35)'; ctx.lineWidth = 1.2 * s;   // shorts
   ctx.beginPath(); ctx.roundRect((-9.5 + lean * 0.3) * s, -21 * s, 19 * s, 9 * s, 3 * s); ctx.fill(); ctx.stroke();
   ctx.strokeStyle = '#222'; ctx.lineWidth = 5 * s;
-  if (p.pose === 'cry') { drawHead(p, s, dir, lean); drawArms(p, s, dir, swing); }
+  if (p.pose === 'cry' || p.pose === 'head') { drawHead(p, s, dir, lean); drawArms(p, s, dir, swing); }
   else { drawArms(p, s, dir, swing); drawHead(p, s, dir, lean); }
   if (p.sip) drawCan(p, s, dir);
   if (p.pose === 'point') {                                   // the pointing finger
@@ -1672,7 +1749,21 @@ const POSE_HANDS = {
   siu: d => [[-19, -17], [19, -17]],
   cry: d => [[-9, -66], [9, -66]],                 // hands over the eyes (drawn over the head)
   sip: d => [[-d * 4, -20], [-d * 4, -20]],
+  fistsDown: d => [[-15, -13], [15, -13]],       // angry: stiff arms, fists pressed down
 };
+// "Mist!": elbows out, hands on top of the head (drawn after the head, bent arms so they don't cover the face)
+function drawHandsOnHead(p, s) {
+  const hk = headK(p), skin = SKINS[p.ai ? 'cpu' : 'human'].neutral;
+  const half = skin ? HEAD_W * hk * 0.5 : 21 * hk, top = skin ? -32 - HEAD_H * hk : -32 - 46 * hk;
+  for (const sg of [-1, 1]) {
+    const el = [sg * (half + 9), -32 - (-32 - top) * 0.45], hd = [sg * half * 0.5, top + 5];
+    ctx.strokeStyle = p.col; ctx.lineWidth = 5 * s; ctx.lineJoin = 'round';
+    ctx.beginPath(); ctx.moveTo(0, -34 * s); ctx.lineTo(el[0] * s, el[1] * s); ctx.lineTo(hd[0] * s, hd[1] * s); ctx.stroke();
+    ctx.fillStyle = '#f2c79b';
+    ctx.beginPath(); ctx.arc(hd[0] * s, hd[1] * s, 3.6 * s, 0, Math.PI * 2); ctx.fill();
+  }
+  ctx.strokeStyle = '#222';
+}
 function drawArms(p, s, dir, swing) {
   const mode = p.pose || armMode(p), o = p === me ? cpu : me;
   let hands;
@@ -1685,6 +1776,7 @@ function drawArms(p, s, dir, swing) {
   else if (mode === 'spread') hands = [[-21, -27], [21, -27]];
   else if (mode === 'keeper') hands = [[-33, -31], [33, -31]];
   else hands = [[swing * 0.8, -20], [-swing * 0.8, -20]];
+  if (mode === 'head') { drawHandsOnHead(p, s); return; }
   for (const [hx, hy] of hands) {
     ctx.strokeStyle = p.col; ctx.lineWidth = 5 * s;
     ctx.beginPath(); ctx.moveTo(0, -34 * s); ctx.lineTo(hx * s, hy * s); ctx.stroke();
