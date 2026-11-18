@@ -107,9 +107,10 @@ const SKINS = { cpu: {}, human: {} };
 // "sunglasses"/"brille" or "hat"/"hut" also work, e.g. prop_kid_hat.png). Used by Mark's "coolHat" celebration.
 const SKIN_PROPS = { cpu: {}, human: {} };
 // Where props sit on a pack face, relative to the face's visible outline (found from the PNG's transparency):
-// w = width as a share of the face width, y = vertical centre (sunglasses) / brim line (hat) as a share of the
-// face height from the top. pack.json can override: {"props": {"human": {"hat": {"w": 1.3, "y": 0.2}}}}
-const PROP_FIT = { sunglasses: { w: 0.8, y: 0.5 }, hat: { w: 1.35, y: 0.24 } };
+// face = hair top → chin. Sunglasses: w = width as a share of the face width, y = centre as a share of the face
+// height. Hat: w = width, gap = brim edge relative to the top edge of the sunglasses (share of the face height;
+// negative = higher). Tuned for Mark v2.1. pack.json can override: {"props": {"human": {"hat": {"gap": 0.02}}}}
+const PROP_FIT = { sunglasses: { w: 0.78, y: 0.6 }, hat: { w: 1.35, gap: -0.005 } };
 const SKIN_BOX = { cpu: null, human: null }, PROP_CFG = { cpu: {}, human: {} };
 const SKIN_DIRS = { cpu: ['onkel', 'uncle', 'cpu'], human: ['nephew', 'neffe', 'spieler', 'player', 'human', 'mark'] };
 const SKIN_DB = 'kickabout-skins', SKIN_STORE = 'pack';
@@ -135,9 +136,14 @@ function alphaBox(img) {
   const c = document.createElement('canvas'), w = c.width = 100, h = c.height = Math.round(100 * img.height / img.width);
   const g = c.getContext('2d'); g.drawImage(img, 0, 0, w, h);
   const d = g.getImageData(0, 0, w, h).data;
-  let x0 = w, x1 = -1, y0 = h, y1 = -1;
-  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (d[(y * w + x) * 4 + 3] > 40) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
-  return x1 < 0 ? null : { l: x0 / w, r: (x1 + 1) / w, t: y0 / h, b: (y1 + 1) / h };
+  let x0 = w, x1 = -1, y0 = h, y1 = -1, maxW = 0;
+  const rowW = new Array(h).fill(0);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (d[(y * w + x) * 4 + 3] > 40) { rowW[y]++; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  if (x1 < 0) return null;
+  for (const v of rowW) maxW = Math.max(maxW, v);
+  let yb = y1;                                           // the chin: last row still wider than a neck would be
+  while (yb > y0 && rowW[yb] < 0.42 * maxW) yb--;
+  return { l: x0 / w, r: (x1 + 1) / w, t: y0 / h, b: (yb + 1) / h };
 }
 async function applySkinPack(pack) {                    // pack = { names, cpu: {mood: Blob}, human: {…}, props: {cpu: {name: Blob}, human: {…}} }
   for (const who of ['cpu', 'human']) {
@@ -1713,7 +1719,9 @@ function drawGlasses(p, s, dir) {
 // Hat: p.hat goes 0 → 1 while it is lifted from the raised hand onto the head. pos = brim centre.
 function hatPos(p, s, dir) {
   const f = faceGeom(p, s, dir), c = propFit(p, 'hat');
-  const on = { x: f.cx, y: f.top + f.h * c.y, w: f.w * c.w };
+  const gl = propImg(p, 'sunglasses'), g = glassesPos(Object.assign({}, p, { glasses: 1 }), s, dir);
+  const glTop = gl && gl.naturalWidth ? g.y - g.w * gl.height / gl.width / 2 : f.top + f.h * 0.45;
+  const on = { x: f.cx, y: c.y != null ? f.top + f.h * c.y : glTop + f.h * c.gap, w: f.w * c.w };   // brim just above the sunglasses
   const e = easeIO(p.hat), from = { x: dir * 30 * s, y: -60 * s, w: on.w * 0.7 };
   const arc = Math.sin(e * Math.PI) * 18 * s;                                  // a little lift over the head
   return { x: from.x + (on.x - from.x) * e, y: from.y + (on.y - from.y) * e - arc, w: from.w + (on.w - from.w) * e };
