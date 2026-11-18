@@ -1,6 +1,6 @@
 # Kick-About – project documentation
 
-*Last updated: 18 Nov 2026 (session 3, v22: conceding reactions, Mark's coolHat celebration)*
+*Last updated: 18 Nov 2026 (session 3, v23: conceding reactions, Mark's coolHat celebration, penalty shoot-out)*
 
 ## 1. What this is
 A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1 football game** set in **our real backyard**, modelled on the matches we play when he visits. It's single-player: **Mark (human) vs. Onkel (CPU = me)**. It runs on a **tablet in landscape** as a **PWA** (installable, fullscreen, offline). The game is in **German** (we speak German together).
@@ -11,7 +11,8 @@ A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1
 - **Stack:** plain HTML5 Canvas + vanilla JS, no build step.
 - **Files:**
   - `index.html`: start screen
-  - `game.js`: about 2000 lines
+  - `game.js`: about 2200 lines
+  - `shootout.js`: the penalty shoot-out mode (front view), about 550 lines; shares game.js globals
   - `sw.js`, `manifest.webmanifest`, `icons/`
   - `img/`: control icons (SVG) and sunglasses
   - `theme/backyard/`: backdrop, wall, gravel tiles, props
@@ -26,10 +27,10 @@ A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1
 | Backyard theme | Generic cartoon art (no real houses or text), so it's OK in the public repo. If `theme/backyard/` is missing, the game falls back to a green stadium. |
 | View | 2.5D perspective side view (like *NHL Open Ice*). The camera sits high behind the near touchline and scrolls. The ground is a top-down texture drawn in perspective strips, **batched per texture piece** (this fixed a 10 fps lag mid-pitch; now up to 120 fps). |
 | Controls | **Right:** joystick (chalk circle; the football is the knob; speed ring). **Left:** one big action button (SCHUSS with the ball / GRÄTSCHE without / ZIELEN… while aiming / WEITER during celebrations) plus SPRINT. **Top:** whiteboard scoreboard and pause. |
-| Caching | `sw.js` is network-first with `fetch(e.request, { cache: 'no-cache' })`, falling back to the cache. **Keep this.** Bump the `CACHE` name when shipping (currently `kickabout-v22`). |
+| Caching | `sw.js` is network-first with `fetch(e.request, { cache: 'no-cache' })`, falling back to the cache. **Keep this.** Bump the `CACHE` name when shipping (currently `kickabout-v23`). |
 | Fonts | Baloo 2 (UI) and Permanent Marker (whiteboard), from Google Fonts. The first start needs internet. |
 
-## 3. Gameplay (v22)
+## 3. Gameplay (v23)
 - **Match:** first to 5 goals. Random first possession; after a goal, the side that conceded kicks off.
 - **Kick-off:** the non-kicker stays outside the centre circle until the kicker moves. Onkel paces impatiently around the circle. A CPU kick-off starts slowly.
 - **Movement:** inertia, stamina (bar above the head, 💦 when tired). Sprint (human only): ×1.5 for 3 s, then a 10 s cooldown; the legs become a cartoon whirl.
@@ -77,6 +78,14 @@ A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1
 - The party stage lasts at least `REACT_MIN[react]` so a reaction isn't cut off by a short celebration; then the usual walk and fist bump. Not used for the car crash scene.
 - **For testing:** `?react=mann|mist|zaehltNicht|warAus|surprised` (only applies if it fits the conceding side; `surprised` fits both).
 
+### Penalty shoot-out ("Elfmeterschießen", v23)
+- **Unlock:** achievement **Elfmeterschießen** after `PEN_UNLOCK_WINS` = 5 wins in total (older saves with ≥ 5 wins are unlocked silently). The start-screen button shows "🔒 Elfmeterschießen (x/5 Siege)" until then; tapping it while locked shows a hint on the button. Testing: `?penalty` unlocks without saving.
+- **Flow:** side view with "Elfmeterschießen!" (Mark at the spot, Onkel in goal) → **pseudo-3D camera turn** (inside-cube rotation by 90°: both views are rendered off-screen and drawn in 6-px column strips with perspective, ~1.25 s) → **front view of the right goal**. 5 kicks each, then sudden death; it ends early when one side can't catch up. Mark kicks first; roles **swap after every kick** (short fade). End: winner caption, tap (or 4.5 s) → start screen.
+- **Front view:** own projection `Q(x, d, z)` (camera 200 behind the penalty spot, height 55; `soF = 1.71·H`, horizon `0.41·H`); ground = the baked gravel texture turned 90° once (`soBuildGround`) and drawn in strips; end wall + backdrop behind the goal, the long wall receding on the left, tree prop; chalk lines; goal with net and cones. The keeper is drawn with `drawPlayer` via a screen override (`p.scr`), scaled `SO_KEEPER_K` = 0.75 so the goal looks big enough; dives rotate the body (`p.rot`). Only the keeper is visible.
+- **Mark kicks:** the arrow goes straight out of the ball (dashed) to an aim ring on the goal plane. Joystick = direction (sticky when released; full deflection can go wide/over). **Hold SCHUSS to charge** (full after `SO_CHARGE_T` = 1.5 s; ring around the button, black/white tick at 1/3), release to shoot. The harder, the jumpier the aim (`SO_SHAKE` = 30 at full power). **Below 1/3 power the keeper always catches it.** Onkel shows his planned dive with a blue arrow + ring (5 zones: left/right low/high, middle) that changes every 0.45–1.15 s until the kick; at the kick he dives there (reach ±44 sideways / ±46 height). Strong shots (> 0.82) in reach are parried 50 %.
+- **Mark keeps:** the left buttons are hidden; the joystick sets direction and length of the dive (red arrow + ring); the CPU's dashed kick arrow wanders (every 0.7–1.4 s) while its power ring around the ball fills; it shoots after 2.4–4.6 s with power 0.5–1.0. Mark dives automatically at the kick (reach ±52 / ±54).
+- **Results:** TOOOR!, Gehalten!, Zu schwach – gefangen!, Abgewehrt!, Daneben!/Drüber!, Pfosten!/Latte!; keeper moods and bubbles ("Mist!", "Mann!!!", "Hab ihn!", "Gehalten!"). Scoreboard: names, a circle per kick (green = goal, red ✗ = no goal, red ring = next kick), totals.
+
 ### Onkel specials
 - **Soda break:** sometimes, with the ball in Mark's half, Onkel stops and drinks from a can ("*schlürf*", "Ahhh!") for about 3.4 s, so Mark can steal the ball. There's also a 25% chance at an Onkel kick-off, which lifts the kick-off rule.
   - **Settings:** `SIP_RATE`, `SIP_CD` = 20 s, `SIP_DUR`.
@@ -99,10 +108,11 @@ Shown on the whiteboard board when paused and after each match. Locked ones are 
 8. **Hattrick** (3 goals in a row in one match)
 9. **Super-Torwart** (10 catches or parries)
 10. **Grätschen-Profi** (10 tackles that win the ball)
-11. **Secret: Scherben bringen Glück** (the car window)
+11. **Elfmeterschießen** (5 wins in total, x/5 – unlocks the shoot-out)
+12. **Secret: Scherben bringen Glück** (the car window)
 
 ### Screens
-- **Start screen:** HTML whiteboard explaining the controls with icons, a skin-pack section (face previews, status, "entfernen"), **📦 Skin-Paket laden**, **Los geht's!**, and the credit "entwickelt von DKO@SPC". It reappears after each match (after the Erfolge board).
+- **Start screen:** HTML whiteboard explaining the controls with icons, a skin-pack section (face previews, status, "entfernen"), **📦 Skin-Paket laden**, **🥅 Elfmeterschießen** (locked until 5 wins), **Los geht's!**, and the credit "entwickelt von DKO@SPC". It reappears after each match (after the Erfolge board).
 - **Pause:** whiteboard button at the top right; opens the Erfolge board; tap to continue.
 
 ## 4. Tuning constants – **keep these values**
@@ -131,6 +141,7 @@ KEEP_REACH = 60        HOLD_T = 6.0
 - **Rendering:**
   - Backyard theme (baked ground pieces, backdrop parallax, wall, props, car damage, cones and ghost goal) → pitch lines → players (legs incl. stomp, kit, arms/poses incl. `fistsDown` and hands-on-head, head/skin via `faceGeom`, glasses, hat, can) → ball → particles → aim line → foreground props → popups.
   - Then the HUD: whiteboard scoreboard, pause, captions, bubbles, controls, toasts, board.
+- **Shoot-out (`shootout.js`):** `soStart` → `soUpdate` (stages intro → turn → ready → aim → flight → result → swap … end) / `soRender` (`soCubeTurn`, `soWorld`, `soHud`). Hooks in game.js: `SO` state object, `frame()` dispatch, pointer routing, `let ctx` (off-screen rendering), `hudOff`, `p.scr`/`p.rot` in `drawPlayer`.
 - **Testing:** in the cloud workspace, run `python3 -m http.server` plus Playwright with `/usr/bin/google-chrome`; set up scenarios via `page.evaluate`, take screenshots. A file chooser can load the skin ZIP.
 
 ## 6. Asset sources
@@ -143,7 +154,6 @@ KEEP_REACH = 60        HOLD_T = 6.0
 - **Sounds:** real samples for kick, whistle, crowd and cheering, plus a mute toggle (only simple beeps so far).
 - **Juice:** screen shake or slow-mo on goals, net bulge, commentary lines as captions.
 - **More inside jokes:** commentary lines, shouts for Onkel's other celebrations.
-- **Penalty shoot-out mode** with its own camera angle and touch challenge.
 - **Settings:** difficulty levels, left-handed control swap, control size, a mute toggle, and timed halves or golden goal.
 - **Evening match theme** from the sunset photos.
 - If the feints prove too hard for an 8-year-old: loosen `FEINT_WINDOW` or the flick threshold.

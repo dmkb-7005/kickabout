@@ -1,6 +1,6 @@
 // Network-first while you iterate; falls back to cache when offline.
-const CACHE = 'kickabout-v22';
-const ASSETS = ['./', 'index.html', 'game.js', 'manifest.webmanifest', 'lib/fflate.min.js', 'icons/icon-192.png', 'icons/icon-512.png', 'img/sunglasses.png',
+const CACHE = 'kickabout-v23';
+const ASSETS = ['./', 'index.html', 'game.js', 'shootout.js', 'manifest.webmanifest', 'lib/fflate.min.js', 'icons/icon-192.png', 'icons/icon-512.png', 'img/sunglasses.png',
   ...['kick', 'tackle', 'bolt', 'bolt_on', 'nervous', 'skip'].map(n => `img/icon_${n}.svg`)];
 
 self.addEventListener('install', e => {

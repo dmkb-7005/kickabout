@@ -51,7 +51,10 @@ const WALK_FRAC = 0.45;                // below this fraction of top speed you d
 const D0 = 520;        // distance from camera to near touchline
 const VIEW_W = 640;    // roughly how much pitch length is visible at mid-depth
 
-const cv = document.getElementById('c'), ctx = cv.getContext('2d');
+const cv = document.getElementById('c');
+let ctx = cv.getContext('2d');           // (let: the shoot-out renders views off-screen for its camera turn)
+let hudOff = false;                      // shoot-out intro: draw the side view without HUD
+const SO = { active: false };            // penalty shoot-out state (filled in by shootout.js)
 let W, H, F, A, HY, camX = FW / 2;
 const btnK = { r: 90, label: 'SCHUSS', col: '#ffd23f' };
 const btnS = { r: 54, label: 'SPRINT', col: '#7ee081' };
@@ -270,12 +273,16 @@ const ACHS = [
   { id: 'hattrick',  icon: '🎩', name: 'Hattrick',             desc: 'Drei Tore hintereinander ohne Gegentor' },
   { id: 'keeper',    icon: '🧤', name: 'Super-Torwart',        desc: '10 Bälle gefangen oder gehalten', prog: s => [Math.min(s.saves, 10), 10] },
   { id: 'tackles',   icon: '🦵', name: 'Grätschen-Profi',      desc: '10 Bälle mit Grätschen erobert', prog: s => [Math.min(s.tackles, 10), 10] },
+  { id: 'penalty',   icon: '🥅', name: 'Elfmeterschießen',     desc: '5 Siege insgesamt – schaltet den Elfmeter-Modus frei', prog: s => [Math.min(s.wins, 5), 5] },
   { id: 'secret',    icon: '🚗', name: 'Scherben bringen Glück', desc: 'Onkel hat sein eigenes Auto getroffen', secret: true },
 ];
 const freshAch = () => ({ unlocked: {}, stats: { wins: 0, streak: 0, bestStreak: 0, bestDist: 0, celebs: [], cleanSheets: 0, saves: 0, tackles: 0 } });
 let ACH = freshAch();
 try { const raw = localStorage.getItem(ACH_KEY); if (raw) { const o = JSON.parse(raw); ACH = { unlocked: o.unlocked || {}, stats: Object.assign(freshAch().stats, o.stats || {}) }; } } catch (_) {}
 try { navigator.storage && navigator.storage.persist && navigator.storage.persist(); } catch (_) {}
+const PEN_UNLOCK_WINS = 5;                                       // total wins that unlock the penalty shoot-out
+if (ACH.stats.wins >= PEN_UNLOCK_WINS && !ACH.unlocked.penalty) ACH.unlocked.penalty = Date.now();   // older saves
+const penaltyUnlocked = () => !!ACH.unlocked.penalty || /[?&]penalty/.test(location.search);       // ?penalty = testing aid
 function saveAch() { try { localStorage.setItem(ACH_KEY, JSON.stringify(ACH)); } catch (_) {} }
 const toasts = [];
 function toast(icon, title, text) { toasts.push({ icon, title, text, t: 0 }); }
@@ -309,6 +316,7 @@ function achMatchEnd(humanWon) {
   if (humanWon) {
     S.wins++; S.streak++; S.bestStreak = Math.max(S.bestStreak, S.streak);
     unlock('firstWin');
+    if (S.wins >= PEN_UNLOCK_WINS) unlock('penalty');
     if (S.streak >= 5) unlock('streak5');
     if (score[1] === 0) { S.cleanSheets++; if (ACH.unlocked.cleanSheet) toast('🧱', 'Zu Null gewonnen!', `Schon ${S.cleanSheets}×`); else unlock('cleanSheet'); }
   } else S.streak = 0;
@@ -377,7 +385,7 @@ function boardTap(e) {
     return;
   }
   if (boardOpen === 'pause') { paused = false; last = performance.now(); }
-  else { phase = 'menu'; msg = ''; document.getElementById('start').style.display = 'flex'; }
+  else { phase = 'menu'; msg = ''; document.getElementById('start').style.display = 'flex'; updatePenBtn(); }
   boardOpen = null;
 }
 function drawToasts(dt) {
@@ -407,7 +415,8 @@ cv.addEventListener('pointerdown', e => {
   e.preventDefault();
   const onPause = phase !== 'menu' && e.clientX > btnP.x - 10 && e.clientY < btnP.y + btnP.w + 10;
   if (boardOpen) { boardTap(e); return; }
-  if (onPause) { paused = true; boardOpen = 'pause'; ptr.move = ptr.kick = ptr.sprint = null; aim.active = false; endSprint(); return; }
+  if (onPause) { paused = true; boardOpen = 'pause'; ptr.move = ptr.kick = ptr.sprint = null; aim.active = false; endSprint(); if (SO.active) soCancelInput(); return; }
+  if (SO.active) { try { cv.setPointerCapture(e.pointerId); } catch (_) {} soPointerDown(e); return; }
   if (phase === 'celebrate') { if (hit(btnK, e)) skipCelebration(); return; }
   if (!playing()) return;
   try { cv.setPointerCapture(e.pointerId); } catch (_) {}
@@ -422,6 +431,7 @@ cv.addEventListener('pointerdown', e => {
 });
 cv.addEventListener('pointermove', e => { if (e.pointerId === ptr.move) { ptr.mx = e.clientX; ptr.my = e.clientY; } });
 function release(e) {
+  if (SO.active) { soPointerUp(e); if (e.pointerId === ptr.move) ptr.move = null; return; }
   if (e.pointerId === ptr.move) ptr.move = null;
   if (e.pointerId === ptr.sprint) { ptr.sprint = null; endSprint(); }
   if (e.pointerId === ptr.kick) { releaseAim(); ptr.kick = null; }
@@ -454,11 +464,30 @@ document.getElementById('skinFile').addEventListener('change', async e => {
 });
 document.getElementById('skinClear').addEventListener('click', async () => { await clearSkins(); updateSkinUI(); });
 
-document.getElementById('go').addEventListener('click', async () => {
+async function enterGame() {
   try { AC = AC || new (window.AudioContext || window.webkitAudioContext)(); AC.resume(); } catch (_) {}
   try { await document.documentElement.requestFullscreen(); } catch (_) {}
   try { await screen.orientation.lock('landscape'); } catch (_) {}
   document.getElementById('start').style.display = 'none';
+}
+function updatePenBtn() {
+  const b = document.getElementById('pen'); if (!b) return;
+  const ok = penaltyUnlocked();
+  b.classList.toggle('locked', !ok);
+  b.textContent = ok ? '🥅 Elfmeterschießen' : `🔒 Elfmeterschießen (${Math.min(ACH.stats.wins, PEN_UNLOCK_WINS)}/${PEN_UNLOCK_WINS} Siege)`;
+}
+updatePenBtn();
+document.getElementById('pen').addEventListener('click', async () => {
+  if (!penaltyUnlocked()) {
+    const b = document.getElementById('pen');
+    b.textContent = `Erst ${PEN_UNLOCK_WINS} Spiele gewinnen! (${Math.min(ACH.stats.wins, PEN_UNLOCK_WINS)}/${PEN_UNLOCK_WINS})`;
+    setTimeout(updatePenBtn, 2200); return;
+  }
+  await enterGame();
+  soStart();
+});
+document.getElementById('go').addEventListener('click', async () => {
+  await enterGame();
   score = [0, 0]; me = cpu = null; carBroken = false; cracks = null; sipCd = 8; particles.length = 0; matchStats = { run: 0 }; trickMark = null; lastShot = null;
   setupKickoff(Math.random() < 0.5);          // random first possession
   camX = FW / 2;
@@ -1622,13 +1651,14 @@ function drawGoalFrame(side, front) {
 
 function drawPlayer(p) {
   if (p.hidden) return;
-  const [sx, sy] = P(p.x, p.d), s = scaleAt(p.d), z = p.z || 0;
+  const [sx, sy] = p.scr ? [p.scr.x, p.scr.y] : P(p.x, p.d), s = p.scr ? p.scr.s : scaleAt(p.d), z = p.z || 0;   // scr: shoot-out front view
   const shrink = 1 / (1 + z / 200);
   ctx.fillStyle = 'rgba(0,0,0,.25)';
   ctx.beginPath(); ctx.ellipse(sx, sy, PR * s * shrink, PR * s * 0.45 * shrink, 0, 0, Math.PI * 2); ctx.fill();
   ctx.save(); ctx.translate(sx + (p.shake ? Math.sin(performance.now() / 35) * 1.6 * s : 0), sy - z * s);
   const dir = p.hx >= 0 ? 1 : -1;
   if (p.slide > 0) ctx.rotate(dir * 1.1);
+  if (p.rot) { ctx.translate(0, -30 * s); ctx.rotate(p.rot); ctx.translate(0, 30 * s); }   // goalkeeper dive (shoot-out)
   if (p.spin != null) ctx.scale(Math.abs(p.spin) < 0.12 ? 0.12 * Math.sign(p.spin || 1) : p.spin, 1);   // half turn in the air
   if (p.legs === 'kneel') ctx.translate(0, 11 * s);
   const swing = p.spd > 20 ? Math.sin(p.run) * Math.min(p.cool ? 3 : 8, p.spd / 30) : 0;
@@ -1661,6 +1691,7 @@ function drawPlayer(p) {
     ctx.beginPath(); ctx.moveTo(sg * 38 * s, -40 * s); ctx.lineTo(sg * 45 * s, -41 * s); ctx.stroke();
   }
   ctx.restore();
+  if (p.scr) return;                                            // shoot-out: no stamina bar
   // stamina bar above the head
   let by = sy - (HEAD_H * headK(p) + 40 + z) * s;
   const hatImg = p.hat != null && propImg(p, 'hat');
@@ -1957,6 +1988,7 @@ function render() {
   if (themeReady) drawProps(true);
   drawPopups();
   drawGoal(0, true); drawGoal(1, true);
+  if (hudOff) return;
 
   if (aim.active) { ctx.fillStyle = 'rgba(10,20,70,.16)'; ctx.fillRect(0, 0, W, H); }
   // HUD
@@ -2000,8 +2032,8 @@ function drawAim() {
 function drawBubbles() {
   for (const p of [me, cpu]) {
     if (!p || !p.say) continue;
-    const [sx, sy] = P(p.x, p.d), s = scaleAt(p.d);
-    const fs = Math.max(18, 22 * s), y = Math.max(fs * 1.7 + 72, sy - ((p.z || 0) + HEAD_H * headK(p) + 62) * s);
+    const [sx, sy] = p.scr ? [p.scr.x, p.scr.y] : P(p.x, p.d), s = p.scr ? p.scr.s : scaleAt(p.d);
+    const fs = Math.max(18, 22 * Math.min(s, 1.6)), y = Math.max(fs * 1.7 + 72, sy - ((p.z || 0) + HEAD_H * headK(p) + 62) * s);
     ctx.font = `900 ${fs}px system-ui`;
     const w = ctx.measureText(p.say.txt).width + fs * 1.1, h = fs * 1.7;
     const bx = clamp(sx - w / 2, 8, W - w - 8);
@@ -2155,9 +2187,14 @@ const SHOW_FPS = /[?&]fps/.test(location.search);
 function frame(t) {
   const raw = t - last, dt = Math.min(1 / 30, raw / 1000); last = t;
   if (SHOW_FPS) { fpsAcc = fpsAcc * 0.95 + Math.max(1, raw) * 0.05; }
-  if (!paused) update(dt * (aim.active ? SLOWMO : 1));
-  for (let i = popups.length - 1; i >= 0; i--) if ((popups[i].t -= dt) <= 0) popups.splice(i, 1);
-  render();
+  if (SO.active) {                                              // penalty shoot-out (shootout.js)
+    if (!paused) soUpdate(dt);
+    soRender();
+  } else {
+    if (!paused) update(dt * (aim.active ? SLOWMO : 1));
+    for (let i = popups.length - 1; i >= 0; i--) if ((popups[i].t -= dt) <= 0) popups.splice(i, 1);
+    render();
+  }
   if (SHOW_FPS) { ctx.font = '700 16px system-ui'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(6, 8, 70, 24); ctx.fillStyle = '#fff'; ctx.fillText(`${Math.round(1000 / fpsAcc)} fps`, 12, 22); }
   requestAnimationFrame(frame);
 }

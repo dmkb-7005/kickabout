@@ -47,6 +47,7 @@
   .wb button:active{transform:translateY(4px);box-shadow:0 2px 0 #a77d00}
   .wb button.alt{border-color:#2a3a40;background:radial-gradient(circle at 40% 30%,#f2f7f9,#b9cbd2);color:#2a3a40;box-shadow:0 6px 0 #6e848c}
   .credit{margin-top:14px;text-align:right;font-size:15px;color:#7a8aa8;letter-spacing:.5px}
+  .wb button.locked{opacity:.6;filter:grayscale(1)}
   .wb button.mini{font-size:15px;padding:4px 14px;min-height:0;border-width:2px;box-shadow:0 3px 0 #6e848c}
 </style>
 </head>
@@ -70,6 +71,7 @@
     </div>
     <div class="btns">
       <button class="alt" id="skinBtn">📦 Skin-Paket laden</button>
+      <button class="alt" id="pen">🔒 Elfmeterschießen</button>
       <button id="go">Los geht's!</button>
     </div>
     <div class="credit">entwickelt von DKO@SPC</div>
@@ -79,6 +81,7 @@
 <div id="rotate" class="overlay">Bitte das Tablet quer halten ↻</div>
 <script src="lib/fflate.min.js"></script>
 <script src="game.js"></script>
+<script src="shootout.js"></script>
 <script>
   // canvas text only picks up web fonts once they are loaded
   if (document.fonts) { document.fonts.load("800 20px 'Baloo 2'"); document.fonts.load("20px 'Permanent Marker'"); }
