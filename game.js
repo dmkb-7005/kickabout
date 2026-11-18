@@ -103,6 +103,14 @@ const EXPRESSIONS = ['neutral', 'determined', 'celebrate', 'shocked', 'dizzy', '
 //   onkel/neutral.png … cheeky.png   (the CPU)      mark/neutral.png …   (the human player)
 //   pack.json (optional): {"human": "Mark", "cpu": "Onkel"}
 const SKINS = { cpu: {}, human: {} };
+// Optional props in the pack, next to the faces: mark/sunglasses.png, mark/hat.png (names containing
+// "sunglasses"/"brille" or "hat"/"hut" also work, e.g. prop_kid_hat.png). Used by Mark's "coolHat" celebration.
+const SKIN_PROPS = { cpu: {}, human: {} };
+// Where props sit on a pack face, relative to the face's visible outline (found from the PNG's transparency):
+// w = width as a share of the face width, y = vertical centre (sunglasses) / brim line (hat) as a share of the
+// face height from the top. pack.json can override: {"props": {"human": {"hat": {"w": 1.3, "y": 0.2}}}}
+const PROP_FIT = { sunglasses: { w: 0.8, y: 0.5 }, hat: { w: 1.35, y: 0.24 } };
+const SKIN_BOX = { cpu: null, human: null }, PROP_CFG = { cpu: {}, human: {} };
 const SKIN_DIRS = { cpu: ['onkel', 'uncle', 'cpu'], human: ['nephew', 'neffe', 'spieler', 'player', 'human', 'mark'] };
 const SKIN_DB = 'kickabout-skins', SKIN_STORE = 'pack';
 function skinDb() {
@@ -122,10 +130,22 @@ async function skinDbDo(mode, fn) {
 function blobToImage(blob) {
   return new Promise((res, rej) => { const im = new Image(); im.onload = () => res(im); im.onerror = rej; im.src = URL.createObjectURL(blob); });
 }
-async function applySkinPack(pack) {                    // pack = { names, cpu: {mood: Blob}, human: {…} }
+// the visible (non-transparent) part of a face image, as fractions of the image size
+function alphaBox(img) {
+  const c = document.createElement('canvas'), w = c.width = 100, h = c.height = Math.round(100 * img.height / img.width);
+  const g = c.getContext('2d'); g.drawImage(img, 0, 0, w, h);
+  const d = g.getImageData(0, 0, w, h).data;
+  let x0 = w, x1 = -1, y0 = h, y1 = -1;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (d[(y * w + x) * 4 + 3] > 40) { if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; }
+  return x1 < 0 ? null : { l: x0 / w, r: (x1 + 1) / w, t: y0 / h, b: (y1 + 1) / h };
+}
+async function applySkinPack(pack) {                    // pack = { names, cpu: {mood: Blob}, human: {…}, props: {cpu: {name: Blob}, human: {…}} }
   for (const who of ['cpu', 'human']) {
-    SKINS[who] = {};
+    SKINS[who] = {}; SKIN_PROPS[who] = {};
     for (const [mood, blob] of Object.entries(pack[who] || {})) { try { SKINS[who][mood] = await blobToImage(blob); } catch (_) {} }
+    for (const [name, blob] of Object.entries((pack.props || {})[who] || {})) { try { SKIN_PROPS[who][name] = await blobToImage(blob); } catch (_) {} }
+    try { SKIN_BOX[who] = SKINS[who].neutral ? alphaBox(SKINS[who].neutral) : null; } catch (_) { SKIN_BOX[who] = null; }
+    PROP_CFG[who] = (pack.names && pack.names.props && pack.names.props[who]) || {};
   }
   if (pack.names) { if (pack.names.human) NAMES.human = pack.names.human; if (pack.names.cpu) NAMES.cpu = pack.names.cpu; }
 }
@@ -137,9 +157,18 @@ function parseSkinZip(buf) {
     if (!parts.length || parts.some(x => x.startsWith('__macosx') || x.startsWith('.'))) continue;
     const file = parts[parts.length - 1];
     if (file === 'pack.json') { try { pack.names = JSON.parse(new TextDecoder().decode(data)); } catch (_) {} continue; }
+    let who = Object.keys(SKIN_DIRS).find(w => parts.slice(0, -1).some(dir => SKIN_DIRS[w].some(n => dir.startsWith(n))));
+    const pm = file.match(/^(.+)\.(png|webp)$/);
+    const prop = pm && (/sunglasses|brille/.test(pm[1]) ? 'sunglasses' : /(^|[_-])(hat|hut)([_-]|$)/.test(pm[1]) ? 'hat' : null);
+    if (prop) {                                          // a prop (sunglasses, hat)
+      if (!who && /kid|mark|kind/.test(pm[1])) who = 'human';
+      if (!who) continue;
+      pack.props = pack.props || { cpu: {}, human: {} };
+      pack.props[who][prop] = new Blob([data], { type: 'image/' + pm[2] });
+      continue;
+    }
     const m = file.match(/^([a-z]+)\.(png|webp|jpe?g)$/);
     if (!m || !EXPRESSIONS.includes(m[1])) continue;
-    const who = Object.keys(SKIN_DIRS).find(w => parts.slice(0, -1).some(dir => SKIN_DIRS[w].some(n => dir.startsWith(n))));
     if (!who) continue;
     const big = parts.some(x => /^\d{3,4}x\d{3,4}$/.test(x) && parseInt(x) > 500);   // prefer the 400x560 versions
     if (pack[who][m[1]] && big) continue;
@@ -156,7 +185,7 @@ async function loadSkinZip(file) {
   return pack;
 }
 async function clearSkins() {
-  SKINS.cpu = {}; SKINS.human = {}; NAMES.human = 'Du'; NAMES.cpu = 'Onkel';
+  SKINS.cpu = {}; SKINS.human = {}; SKIN_PROPS.cpu = {}; SKIN_PROPS.human = {}; SKIN_BOX.cpu = SKIN_BOX.human = null; NAMES.human = 'Du'; NAMES.cpu = 'Onkel';
   try { await skinDbDo('readwrite', st => st.delete('current')); } catch (_) {}
 }
 const skinsReady = (async () => {
@@ -228,7 +257,7 @@ const ACHS = [
   { id: 'firstWin',  icon: '🏆', name: 'Erster Sieg',         desc: 'Gewinne dein erstes Spiel' },
   { id: 'streak5',   icon: '🔥', name: '5 Siege in Folge',     desc: 'Fünf Spiele hintereinander gewinnen', prog: s => [Math.min(s.streak, 5), 5] },
   { id: 'longGoal',  icon: '📏', name: 'Weitestes Tor',        desc: 'Dein weitestes Tor', value: s => s.bestDist ? `${s.bestDist.toFixed(1).replace('.', ',')} m` : '–' },
-  { id: 'celebs',    icon: '🎉', name: 'Jubel-Sammler',        desc: 'Alle Torjubel gezeigt', prog: s => [s.celebs.length, 5] },
+  { id: 'celebs',    icon: '🎉', name: 'Jubel-Sammler',        desc: 'Alle Torjubel gezeigt', prog: s => [s.celebs.length, HUMAN_MOVES.length] },
   { id: 'cleanSheet',icon: '🧱', name: 'Zu Null gewonnen',     desc: 'Gewinnen ohne Gegentor', value: s => `${s.cleanSheets}×` },
   { id: 'trick',     icon: '🌀', name: 'Ausgetrickst!',        desc: 'Tor nach einem Trick (hoch-runter-hoch)' },
   { id: 'chip',      icon: '🪂', name: 'Lupfer-König',         desc: 'Tor nach einem Lupfer über den Gegner' },
@@ -281,7 +310,7 @@ function achMatchEnd(humanWon) {
 }
 function achCeleb(move) {
   const S = ACH.stats;
-  if (!S.celebs.includes(move)) { S.celebs.push(move); saveAch(); if (S.celebs.length >= 5) unlock('celebs'); }
+  if (!S.celebs.includes(move)) { S.celebs.push(move); saveAch(); if (S.celebs.length >= HUMAN_MOVES.length) unlock('celebs'); }
 }
 function achCount(key, id, n) { ACH.stats[key]++; saveAch(); if (ACH.stats[key] >= n) unlock(id); }
 
@@ -959,7 +988,7 @@ function separate() {
 // =====================================================================
 const CPU_MOVES = ['armsUp', 'shades', 'jumpPunch', 'vArms', 'basic'];
 const SUNGLASSES = new Image(); SUNGLASSES.src = 'img/sunglasses.png';
-const HUMAN_MOVES = ['toorRun', 'ronaldo', 'kneeSlide', 'runHouse', 'basic'];
+const HUMAN_MOVES = ['toorRun', 'ronaldo', 'kneeSlide', 'runHouse', 'coolHat', 'basic'];
 let celeb = null, lastMsg = '', msgStart = 0;
 
 // Conceding reactions: usually the plain "gutted" stance; now and then a custom one.
@@ -1029,6 +1058,22 @@ function partyMove(p, T, k, dt) {
       if (p.glasses < 1) { p.glasses = Math.min(1, p.glasses + dt / 0.9); accelTo(p, 0, 0, dt * 2); if (p.glasses >= 1) { p.pose = null; k.t0 = T; } return false; }
       p.cool = true;
       return goTo(p, FW / 2 + (p.ai ? 90 : -90), FD / 2, 0.26, dt) < 20 || T - k.t0 > 4.5;
+    case 'coolHat': {                                           // human: like Onkel's "shades", plus his own hat
+      const hasHat = !!SKIN_PROPS.human.hat;
+      if (!k.init) { k.init = 1; p.glasses = 0; p.pose = 'glasses'; k.st = 0; }
+      if (k.st === 0) {                                         // sunglasses on
+        accelTo(p, 0, 0, dt * 2); p.glasses = Math.min(1, p.glasses + dt / 0.9);
+        if (p.glasses >= 1) { if (hasHat) { k.st = 1; p.hat = 0; p.pose = 'hat'; } else { k.st = 2; p.pose = null; k.t0 = T; } }
+        return false;
+      }
+      if (k.st === 1) {                                         // hat on
+        accelTo(p, 0, 0, dt * 2); p.hat = Math.min(1, p.hat + dt / 0.7);
+        if (p.hat >= 1) { k.st = 2; p.pose = null; k.t0 = T; }
+        return false;
+      }
+      p.cool = true;
+      return goTo(p, FW / 2 + (p.ai ? 90 : -90), FD / 2, 0.26, dt) < 20 || T - k.t0 > 4.5;
+    }
     case 'carCrash': {                                          // Onkel's car window… and Mark laughing
       const m = celeb.ot;
       if (!k.init) { k.init = 1; say(p, 'NEEEIN!', 1.2); p.pose = 'up'; }
@@ -1611,7 +1656,13 @@ function drawPlayer(p) {
   }
   ctx.restore();
   // stamina bar above the head
-  const bw = 34 * s, by = sy - (HEAD_H * headK(p) + 40 + z) * s;
+  let by = sy - (HEAD_H * headK(p) + 40 + z) * s;
+  const hatImg = p.hat != null && propImg(p, 'hat');
+  if (hatImg && hatImg.naturalWidth) {                         // wearing the hat: the bar floats above it
+    const g = hatPos(p, s, p.hx >= 0 ? 1 : -1), hatTop = sy - z * s + g.y - g.w * hatImg.height / hatImg.width * 0.84;
+    by = Math.min(by, hatTop - 9 * s);
+  }
+  const bw = 34 * s;
   ctx.fillStyle = 'rgba(0,0,0,.45)'; ctx.fillRect(sx - bw / 2 - 1, by - 1, bw + 2, 6 * s + 2);
   ctx.fillStyle = p.stam > 0.5 ? '#5ad65a' : p.stam > 0.25 ? '#ffd23f' : '#ff5a4f';
   ctx.fillRect(sx - bw / 2, by, bw * p.stam, 6 * s);
@@ -1626,21 +1677,52 @@ function drawPlayer(p) {
   }
 }
 
+// Face geometry in canvas pixels (relative to the player's origin): outline of a pack face, or the drawn head.
+function faceGeom(p, s, dir) {
+  const who = p.ai ? 'cpu' : 'human', hk = headK(p), lean = (1 - p.stam) * 4 * dir;
+  const bob = p.spd > 20 ? Math.abs(Math.sin(p.run)) * 1.5 : 0, bottom = (-32 - bob) * s;
+  if (SKINS[who].neutral) {
+    const w = HEAD_W * s * hk, h = HEAD_H * s * hk, b = SKIN_BOX[who] || { l: 0.08, r: 0.92, t: 0.05, b: 0.9 };
+    const left = lean * s - w / 2, top = bottom - h;
+    return { cx: left + w * (b.l + b.r) / 2, top: top + h * b.t, w: w * (b.r - b.l), h: h * (b.b - b.t), skin: true, img: { top, h, w } };
+  }
+  const r = 21 * s * hk;
+  return { cx: (lean + dir * 1.5) * s, top: bottom - 2 * r - 4 * s, w: 2 * r, h: 2 * r, skin: false };
+}
+const propFit = (p, name) => Object.assign({}, PROP_FIT[name], PROP_CFG[p.ai ? 'cpu' : 'human'][name] || {});
+const propImg = (p, name) => SKIN_PROPS[p.ai ? 'cpu' : 'human'][name] || (name === 'sunglasses' ? SUNGLASSES : null);
+const easeIO = t => { t = clamp(t || 0, 0, 1); return t * t * (3 - 2 * t); };
+
 // Sunglasses: p.glasses goes 0 → 1 while they travel from the hand to the eyes.
 function glassesPos(p, s, dir) {
-  const lean = (1 - p.stam) * 4 * dir, bob = p.spd > 20 ? Math.abs(Math.sin(p.run)) * 1.5 : 0, bottom = (-32 - bob) * s;
-  const skin = SKINS[p.ai ? 'cpu' : 'human'].neutral;
-  const hk = headK(p);
-  const eye = skin ? { x: lean * s, y: bottom - HEAD_H * s * hk * 0.47, w: HEAD_W * s * hk * 0.66 }
-                   : { x: (lean + dir * 3) * s, y: bottom - 27 * s * hk, w: 40 * s * hk };
-  const t = clamp(p.glasses || 0, 0, 1), e = t * t * (3 - 2 * t);
+  const f = faceGeom(p, s, dir), own = SKIN_PROPS[p.ai ? 'cpu' : 'human'].sunglasses || PROP_CFG[p.ai ? 'cpu' : 'human'].sunglasses;
+  let eye;
+  if (f.skin && !own) eye = { x: (1 - p.stam) * 4 * dir * s, y: f.img.top + f.img.h * 0.53, w: f.img.w * 0.66 };   // Onkel's tuned spot
+  else if (f.skin) { const c = propFit(p, 'sunglasses'); eye = { x: f.cx, y: f.top + f.h * c.y, w: f.w * c.w }; }
+  else eye = { x: f.cx + dir * 1.5 * s, y: f.top + f.h * 0.47, w: f.w * 0.95 };
+  const e = easeIO(p.glasses);
   const from = { x: dir * 34 * s, y: -30 * s, w: eye.w * 0.6 };              // starts at hip height in the hand
   return { x: from.x + (eye.x - from.x) * e, y: from.y + (eye.y - from.y) * e, w: from.w + (eye.w - from.w) * e };
 }
 function drawGlasses(p, s, dir) {
-  if (p.glasses == null || !SUNGLASSES.complete || !SUNGLASSES.naturalWidth) return;
-  const g = glassesPos(p, s, dir), h = g.w * SUNGLASSES.height / SUNGLASSES.width;
-  ctx.drawImage(SUNGLASSES, g.x - g.w / 2, g.y - h / 2, g.w, h);
+  const img = propImg(p, 'sunglasses');
+  if (p.glasses == null || !img || !img.complete || !img.naturalWidth) return;
+  const g = glassesPos(p, s, dir), h = g.w * img.height / img.width;
+  ctx.drawImage(img, g.x - g.w / 2, g.y - h / 2, g.w, h);
+}
+// Hat: p.hat goes 0 → 1 while it is lifted from the raised hand onto the head. pos = brim centre.
+function hatPos(p, s, dir) {
+  const f = faceGeom(p, s, dir), c = propFit(p, 'hat');
+  const on = { x: f.cx, y: f.top + f.h * c.y, w: f.w * c.w };
+  const e = easeIO(p.hat), from = { x: dir * 30 * s, y: -60 * s, w: on.w * 0.7 };
+  const arc = Math.sin(e * Math.PI) * 18 * s;                                  // a little lift over the head
+  return { x: from.x + (on.x - from.x) * e, y: from.y + (on.y - from.y) * e - arc, w: from.w + (on.w - from.w) * e };
+}
+function drawHat(p, s, dir) {
+  const img = propImg(p, 'hat');
+  if (p.hat == null || !img || !img.complete || !img.naturalWidth) return;
+  const g = hatPos(p, s, dir), h = g.w * img.height / img.width;
+  ctx.drawImage(img, g.x - g.w / 2, g.y - h * 0.9, g.w, h);                   // the brim's lower edge is ~90 % down the image
 }
 function drawHead(p, s, dir, lean) {
   const sk = SKINS[p.ai ? 'cpu' : 'human'], mood = moodOf(p), img = sk[mood] || sk.neutral || null;
@@ -1649,7 +1731,7 @@ function drawHead(p, s, dir, lean) {
   if (img) {
     const w = HEAD_W * s * headK(p), h = HEAD_H * s * headK(p);
     ctx.drawImage(img, cx - w / 2, bottom - h, w, h);
-    drawGlasses(p, s, dir);
+    drawGlasses(p, s, dir); drawHat(p, s, dir);
     return;
   }
   // drawn cartoon head (CPU, or the human when no skin is present)
@@ -1686,7 +1768,7 @@ function drawHead(p, s, dir, lean) {
   else if (mood === 'determined') { ctx.moveTo(fx - 5 * s, my); ctx.lineTo(fx + 5 * s, my); ctx.stroke(); }
   else if (mood === 'cheeky') { ctx.arc(fx, my - 2 * s, 5 * s, 0.2, Math.PI - 0.6); ctx.stroke(); }
   else { ctx.arc(fx, my - 3 * s, 5 * s, 0.4, Math.PI - 0.4); ctx.stroke(); }
-  drawGlasses(p, s / hk, dir);
+  drawGlasses(p, s / hk, dir); drawHat(p, s / hk, dir);
 }
 
 // Cartoon blur-loop legs while sprinting (classic "legs become a whirl" effect)
@@ -1769,6 +1851,7 @@ function drawArms(p, s, dir, swing) {
   let hands;
   if (POSE_HANDS[mode]) hands = POSE_HANDS[mode](dir);
   else if (mode === 'glasses') { const g = glassesPos(p, s, dir); hands = [[g.x / s - dir * 8, g.y / s + 4], [-dir * 4, -20]]; }
+  else if (mode === 'hat') { const g = hatPos(p, s, dir); hands = [[g.x / s - dir * 6, g.y / s - 4], [-dir * 4, -20]]; }
   else if (mode === 'point') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 38, -40], [-sg * 6, -24]]; }
   else if (mode === 'fist') { const sg = Math.sign(o.x - p.x) || dir; hands = [[sg * 32, -30], [-sg * 4, -20]]; }
   else if (mode === 'hold') hands = [[dir * 12, -30], [dir * 12, -25]];

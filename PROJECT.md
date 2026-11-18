@@ -1,6 +1,6 @@
 # Kick-About – project documentation
 
-*Last updated: 18 Nov 2026 (session 3, v20: conceding reactions)*
+*Last updated: 18 Nov 2026 (session 3, v21: conceding reactions, Mark's coolHat celebration)*
 
 ## 1. What this is
 A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1 football game** set in **our real backyard**, modelled on the matches we play when he visits. It's single-player: **Mark (human) vs. Onkel (CPU = me)**. It runs on a **tablet in landscape** as a **PWA** (installable, fullscreen, offline). The game is in **German** (we speak German together).
@@ -22,14 +22,14 @@ A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1
 | Topic | Decision |
 |---|---|
 | Personal assets | Faces only come from the private **skin pack ZIP**. It is loaded on the start screen ("📦 Skin-Paket laden"), unzipped in the browser (fflate), stored in **IndexedDB** (`kickabout-skins`) with `navigator.storage.persist()`, and auto-loaded on every start. Without a pack: drawn cartoon faces and names "Du" vs "Onkel". |
-| Skin pack format | Folders `onkel/` and `mark/` (also accepted: uncle/cpu and nephew/neffe/spieler/player/human), files named `<mood>.png` for the 7 moods, plus an optional `pack.json` `{"human":"Mark","cpu":"Onkel"}`. Size subfolders like `400x560/` are fine; 400×560 is preferred. Current pack: v2 skins (uncle v2, nephew v2.1), **necks cut off** along the chin, with a fixed vertical offset per character (Onkel 48 px, Mark 80 px) so heads don't jump between moods. |
+| Skin pack format | Folders `onkel/` and `mark/` (also accepted: uncle/cpu and nephew/neffe/spieler/player/human), files named `<mood>.png` for the 7 moods, plus an optional `pack.json` `{"human":"Mark","cpu":"Onkel"}`. Size subfolders like `400x560/` are fine; 400×560 is preferred. **Props (optional, v21):** put them next to the faces, e.g. `mark/sunglasses.png` and `mark/hat.png`; any name containing `sunglasses`/`brille` or `hat`/`hut` works (e.g. `prop_kid_hat.png`), and a name containing `kid`/`mark` also works outside the folders. Placement is computed from the face's transparent outline (`PROP_FIT`: sunglasses w 0.8 / y 0.5, hat w 1.35 / brim at y 0.24 of the face height); fine-tune in `pack.json`: `{"props": {"human": {"hat": {"w": 1.3, "y": 0.2}, "sunglasses": {"w": 0.8, "y": 0.52}}}}`. Onkel keeps the public `img/sunglasses.png` at its tuned spot unless the pack gives him his own. Current pack: v2 skins (uncle v2, nephew v2.1), **necks cut off** along the chin, with a fixed vertical offset per character (Onkel 48 px, Mark 80 px) so heads don't jump between moods. |
 | Backyard theme | Generic cartoon art (no real houses or text), so it's OK in the public repo. If `theme/backyard/` is missing, the game falls back to a green stadium. |
 | View | 2.5D perspective side view (like *NHL Open Ice*). The camera sits high behind the near touchline and scrolls. The ground is a top-down texture drawn in perspective strips, **batched per texture piece** (this fixed a 10 fps lag mid-pitch; now up to 120 fps). |
 | Controls | **Right:** joystick (chalk circle; the football is the knob; speed ring). **Left:** one big action button (SCHUSS with the ball / GRÄTSCHE without / ZIELEN… while aiming / WEITER during celebrations) plus SPRINT. **Top:** whiteboard scoreboard and pause. |
-| Caching | `sw.js` is network-first with `fetch(e.request, { cache: 'no-cache' })`, falling back to the cache. **Keep this.** Bump the `CACHE` name when shipping (currently `kickabout-v20`). |
+| Caching | `sw.js` is network-first with `fetch(e.request, { cache: 'no-cache' })`, falling back to the cache. **Keep this.** Bump the `CACHE` name when shipping (currently `kickabout-v21`). |
 | Fonts | Baloo 2 (UI) and Permanent Marker (whiteboard), from Google Fonts. The first start needs internet. |
 
-## 3. Gameplay (v20)
+## 3. Gameplay (v21)
 - **Match:** first to 5 goals. Random first possession; after a goal, the side that conceded kicks off.
 - **Kick-off:** the non-kicker stays outside the centre circle until the kicker moves. Onkel paces impatiently around the circle. A CPU kick-off starts slowly.
 - **Movement:** inertia, stamina (bar above the head, 💦 when tired). Sprint (human only): ×1.5 for 3 s, then a 10 s cooldown; the legs become a cartoon whirl.
@@ -60,6 +60,7 @@ A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1
   - **ronaldo:** a jump with a half turn in the air, landing in the pose.
   - **kneeSlide.**
   - **runHouse:** "Ma! Maaaaa! Tor! Tooor!", running behind the house.
+  - **coolHat** (v21): like Onkel's *shades* – puts on his own sunglasses, then lifts his hat onto his head, strolls to the centre looking cool and keeps both on until kick-off. Props come from the skin pack; without them he uses Onkel's sunglasses and no hat. The stamina bar floats above the hat.
   - **basic.**
 - **Afterwards:** both walk to the centre line, stopping one arm length on each side, and **fist-bump**. The ball drops from the sky while the non-kicker steps back to the usual distance, then kick-off.
 - **Captions** pop up from the bottom, so faces stay visible.
@@ -91,7 +92,7 @@ Shown on the whiteboard board when paused and after each match. Locked ones are 
 1. **Erster Sieg**
 2. **5 Siege in Folge** (streak x/5)
 3. **Weitestes Tor** (distance in metres; pitch ≈ 14 m, `M_PER_UNIT`; new-record toasts)
-4. **Jubel-Sammler** (x/5 of Mark's celebrations)
+4. **Jubel-Sammler** (x/6 of Mark's celebrations, `HUMAN_MOVES.length`)
 5. **Zu Null gewonnen** (counter)
 6. **Ausgetrickst!** (goal within 6 s of a dazzle feint, CPU not touching the ball in between)
 7. **Lupfer-König** (the same after a chip)
@@ -128,7 +129,7 @@ KEEP_REACH = 60        HOLD_T = 6.0
 - **Simulation:** AI (`aiThink`), actions (`doKick`, `doTackle`), `movePlayer`, `dribble`, `ballPhysics` (wild and out-of-pitch modes, `goalFrame`).
 - **Match flow:** `goal` (long-shot check) → `startCelebration` (`pickReaction`) / `partyMove` + `reactMove` / `updateCelebration` (party → walk → bump → drop) → `updateCamera` → `update`.
 - **Rendering:**
-  - Backyard theme (baked ground pieces, backdrop parallax, wall, props, car damage, cones and ghost goal) → pitch lines → players (legs incl. stomp, kit, arms/poses incl. `fistsDown` and hands-on-head, head/skin, glasses, can) → ball → particles → aim line → foreground props → popups.
+  - Backyard theme (baked ground pieces, backdrop parallax, wall, props, car damage, cones and ghost goal) → pitch lines → players (legs incl. stomp, kit, arms/poses incl. `fistsDown` and hands-on-head, head/skin via `faceGeom`, glasses, hat, can) → ball → particles → aim line → foreground props → popups.
   - Then the HUD: whiteboard scoreboard, pause, captions, bubbles, controls, toasts, board.
 - **Testing:** in the cloud workspace, run `python3 -m http.server` plus Playwright with `/usr/bin/google-chrome`; set up scenarios via `page.evaluate`, take screenshots. A file chooser can load the skin ZIP.
 
