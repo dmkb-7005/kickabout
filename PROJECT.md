@@ -1,6 +1,6 @@
 # Kick-About – project documentation
 
-*Last updated: 18 Nov 2026 (session 3, v24: conceding reactions, Mark's coolHat celebration, penalty shoot-out with shattering net)*
+*Last updated: 18 Nov 2026 (session 3, v25: conceding reactions, Mark's coolHat celebration, penalty shoot-out with shattering net)*
 
 ## 1. What this is
 A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1 football game** set in **our real backyard**, modelled on the matches we play when he visits. It's single-player: **Mark (human) vs. Onkel (CPU = me)**. It runs on a **tablet in landscape** as a **PWA** (installable, fullscreen, offline). The game is in **German** (we speak German together).
@@ -27,10 +27,10 @@ A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1
 | Backyard theme | Generic cartoon art (no real houses or text), so it's OK in the public repo. If `theme/backyard/` is missing, the game falls back to a green stadium. |
 | View | 2.5D perspective side view (like *NHL Open Ice*). The camera sits high behind the near touchline and scrolls. The ground is a top-down texture drawn in perspective strips, **batched per texture piece** (this fixed a 10 fps lag mid-pitch; now up to 120 fps). |
 | Controls | **Right:** joystick (chalk circle; the football is the knob; speed ring). **Left:** one big action button (SCHUSS with the ball / GRÄTSCHE without / ZIELEN… while aiming / WEITER during celebrations) plus SPRINT. **Top:** whiteboard scoreboard and pause. |
-| Caching | `sw.js` is network-first with `fetch(e.request, { cache: 'no-cache' })`, falling back to the cache. **Keep this.** Bump the `CACHE` name when shipping (currently `kickabout-v24`). |
+| Caching | `sw.js` is network-first with `fetch(e.request, { cache: 'no-cache' })`, falling back to the cache. **Keep this.** Bump the `CACHE` name when shipping (currently `kickabout-v25`). |
 | Fonts | Baloo 2 (UI) and Permanent Marker (whiteboard), from Google Fonts. The first start needs internet. |
 
-## 3. Gameplay (v24)
+## 3. Gameplay (v25)
 - **Match:** first to 5 goals. Random first possession; after a goal, the side that conceded kicks off.
 - **Kick-off:** the non-kicker stays outside the centre circle until the kicker moves. Onkel paces impatiently around the circle. A CPU kick-off starts slowly.
 - **Movement:** inertia, stamina (bar above the head, 💦 when tired). Sprint (human only): ×1.5 for 3 s, then a 10 s cooldown; the legs become a cartoon whirl.
@@ -143,6 +143,7 @@ KEEP_REACH = 60        HOLD_T = 6.0
   - Backyard theme (baked ground pieces, backdrop parallax, wall, props, car damage, cones and ghost goal) → pitch lines → players (legs incl. stomp, kit, arms/poses incl. `fistsDown` and hands-on-head, head/skin via `faceGeom`, glasses, hat, can) → ball → particles → aim line → foreground props → popups.
   - Then the HUD: whiteboard scoreboard, pause, captions, bubbles, controls, toasts, board.
 - **Shoot-out (`shootout.js`):** `soStart` → `soUpdate` (stages intro → turn → ready → aim → flight → result → swap … end) / `soRender` (`soCubeTurn`, `soWorld`, `soHud`). Hooks in game.js: `SO` state object, `frame()` dispatch, pointer routing, `let ctx` (off-screen rendering), `hudOff`, `p.scr`/`p.rot` in `drawPlayer`.
+- **Loop safety (v25):** `frame()` requests the next frame first, so a single error can't freeze the game; after `soUpdate` the shoot-out may have ended in the same frame, so `frame()` re-checks `SO.active` before rendering (this was the "stuck after the shoot-out" bug).
 - **Testing:** in the cloud workspace, run `python3 -m http.server` plus Playwright with `/usr/bin/google-chrome`; set up scenarios via `page.evaluate`, take screenshots. A file chooser can load the skin ZIP.
 
 ## 6. Asset sources

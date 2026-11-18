@@ -2185,17 +2185,17 @@ function drawPauseScreen() {
 let last = performance.now(), fpsAcc = 16;
 const SHOW_FPS = /[?&]fps/.test(location.search);
 function frame(t) {
+  requestAnimationFrame(frame);                                 // first, so one error can never freeze the game
   const raw = t - last, dt = Math.min(1 / 30, raw / 1000); last = t;
   if (SHOW_FPS) { fpsAcc = fpsAcc * 0.95 + Math.max(1, raw) * 0.05; }
   if (SO.active) {                                              // penalty shoot-out (shootout.js)
     if (!paused) soUpdate(dt);
-    soRender();
+    if (SO.active) soRender(); else render();                   // (the shoot-out may just have ended this frame)
   } else {
     if (!paused) update(dt * (aim.active ? SLOWMO : 1));
     for (let i = popups.length - 1; i >= 0; i--) if ((popups[i].t -= dt) <= 0) popups.splice(i, 1);
     render();
   }
   if (SHOW_FPS) { ctx.font = '700 16px system-ui'; ctx.textAlign = 'left'; ctx.fillStyle = 'rgba(0,0,0,.55)'; ctx.fillRect(6, 8, 70, 24); ctx.fillStyle = '#fff'; ctx.fillText(`${Math.round(1000 / fpsAcc)} fps`, 12, 22); }
-  requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
