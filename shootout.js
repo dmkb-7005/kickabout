@@ -19,6 +19,9 @@ const SO_ZONE_D = 58;                       // lateral distance of a dive from t
 const SO_KEEPER_K = 0.75;                   // keeper drawn a bit smaller up close, so the goal looks big enough
 const SO_BALL_R = 7;                        // drawn ball radius (world units) – the side-view ball would look huge up close
 const BTN_POWER = Object.assign({}, BTN.kick, { label: 'KRAFT…' });
+// The net: opaque white tiles. On a goal they flash green (Mark scores) or red (Onkel scores) and shatter like glass.
+const NET_COL = { human: [47, 210, 90], cpu: [232, 52, 58] };
+const NET_FLASH = 0.22, NET_SHATTER = 0.3;              // seconds from the ball hitting the net: colour spreads, then it breaks
 
 // ---------- front-view projection ----------
 let soF = 1, soHZ = 0;
@@ -59,6 +62,66 @@ function soSay(t) { SO.msg = t; SO.msgT = performance.now(); }
 
 // ---------- roles ----------
 const soKeeper = () => SO.kickerHuman ? cpu : me;
+function soBuildNet() {
+  const d1 = SO_C - GOAL_HALF, d2 = SO_C + GOAL_HALF, bx = FW + GOAL_DEPTH, bh = GOAL_H * 0.8, tiles = [];
+  // a panel = 4 world corners (p00, p10, p01, p11), split into nu × nv tiles
+  const panel = (p00, p10, p01, p11, nu, nv, shade) => {
+    const at = (u, v) => [0, 1, 2].map(i => (p00[i] * (1 - u) + p10[i] * u) * (1 - v) + (p01[i] * (1 - u) + p11[i] * u) * v);
+    for (let i = 0; i < nu; i++) for (let j = 0; j < nv; j++) {
+      const c = [at(i / nu, j / nv), at((i + 1) / nu, j / nv), at((i + 1) / nu, (j + 1) / nv), at(i / nu, (j + 1) / nv)];
+      const m = [0, 1, 2].map(k => c.reduce((a, p) => a + p[k], 0) / 4);
+      tiles.push({ c, m, shade, off: [0, 0, 0], v: null, rot: 0, w: 0 });
+    }
+  };
+  panel([bx, d1, 0], [bx, d2, 0], [bx, d1, bh], [bx, d2, bh], 12, 6, 1);                 // back
+  panel([FW, d1, 0], [bx, d1, 0], [FW, d1, GOAL_H], [bx, d1, bh], 3, 6, 0.8);            // left side
+  panel([FW, d2, 0], [bx, d2, 0], [FW, d2, GOAL_H], [bx, d2, bh], 3, 6, 0.8);            // right side
+  panel([FW, d1, GOAL_H], [FW, d2, GOAL_H], [bx, d1, bh], [bx, d2, bh], 12, 2, 0.9);     // roof
+  SO.net = { tiles, hit: null };
+}
+function soNetHit(d, z) {                               // the ball has hit the net: start the flash
+  if (!SO.net || SO.net.hit) return;
+  SO.net.hit = { t: 0, d, z, col: SO.kickerHuman ? NET_COL.human : NET_COL.cpu };
+}
+function soUpdateNet(dt) {
+  const N = SO.net; if (!N || !N.hit) return;
+  const h = N.hit; h.t += dt;
+  for (const T of N.tiles) {
+    const delay = Math.hypot(T.m[1] - h.d, T.m[2] - h.z) / 600;   // spreads out from where the ball hit
+    if (!T.v && h.t > NET_SHATTER + delay * 0.8) {
+      const dd = T.m[1] - h.d, dz = T.m[2] - h.z, l = Math.hypot(dd, dz) || 1;
+      T.v = [60 - Math.random() * 170, dd / l * (70 + Math.random() * 170), 90 + dz / l * 120 + Math.random() * 170];   // mostly outwards and up, a few towards us
+      T.w = (Math.random() - 0.5) * 14; T.life = 1.1 + Math.random() * 0.5;
+      if (!h.sound) { h.sound = 1; noise(0.45, 0.35); beep(2300, 0.05, 'square', 0.06); beep(1700, 0.08, 'triangle', 0.08); }
+    }
+    if (T.v) {
+      T.v[2] -= GRAVITY * 0.7 * dt;
+      for (let k = 0; k < 3; k++) T.off[k] += T.v[k] * dt;
+      T.rot += T.w * dt; T.life -= dt;
+    }
+  }
+}
+// still = the intact net (drawn behind the keeper); flying = the shards (drawn on top of everything)
+function soDrawNet(flying) {
+  const N = SO.net; if (!N) return;
+  const h = N.hit;
+  for (const T of N.tiles) {
+    if (!!T.v !== flying || (T.v && T.life <= 0) || T.m[0] + T.off[0] < SO_CAM_X + 150) continue;   // (shards right in front of the camera would look huge)
+    let f = 0;
+    if (h) { const delay = Math.hypot(T.m[1] - h.d, T.m[2] - h.z) / 600; f = clamp((h.t - delay) / NET_FLASH, 0, 1); }
+    const col = h ? h.col : [255, 255, 255];
+    const r = Math.round(255 + (col[0] - 255) * f), g = Math.round(255 + (col[1] - 255) * f), b = Math.round(255 + (col[2] - 255) * f);
+    const pts = T.c.map(p => Q(p[0] + T.off[0], p[1] + T.off[1], p[2] + T.off[2]));
+    const cx = pts.reduce((a, p) => a + p[0], 0) / 4, cy = pts.reduce((a, p) => a + p[1], 0) / 4;
+    const cr = Math.cos(T.rot), sr = Math.sin(T.rot), shrink = T.v ? 0.88 : 0.9;      // gaps between tiles = the mesh
+    ctx.beginPath();
+    pts.forEach(([x, y], i) => { const dx = (x - cx) * shrink, dy = (y - cy) * shrink, X = cx + dx * cr - dy * sr, Y = cy + dx * sr + dy * cr; i ? ctx.lineTo(X, Y) : ctx.moveTo(X, Y); });
+    ctx.closePath();
+    const a = (T.v ? Math.min(1, T.life / 0.4) : 1) * (0.42 + 0.4 * f) * T.shade;
+    ctx.fillStyle = `rgba(${r},${g},${b},${a})`; ctx.fill();
+    if (f > 0 || T.v) { ctx.strokeStyle = `rgba(255,255,255,${0.7 * a})`; ctx.lineWidth = 1.5; ctx.stroke(); }   // glassy edge
+  }
+}
 function soSetupKick() {
   const K = soKeeper(), Kk = K === me ? cpu : me;
   for (const p of [me, cpu]) { resetPose(p); p.rot = 0; p.z = 0; p.say = null; p.moodT = 0; }
@@ -66,6 +129,7 @@ function soSetupKick() {
   K.x = SO_GX; K.d = SO_C; K.pose = 'keeper'; K.hx = 1; setMood(K, 'determined', 99);
   Object.assign(ball, { x: SO_SPOT, d: SO_C, z: 0, held: null });
   SO.power = 0; SO.charging = false; SO.aimD = SO_C; SO.aimZ = 30; SO.flight = null; SO.result = null; SO.dive = null; SO.lastJoy = null;
+  soBuildNet();
   SO.intent = { i: 2, d: SO_C, z: 45, next: 0.6 };
   if (!SO.kickerHuman) {                               // the CPU takes the kick
     const zone = Math.random() < 0.15 ? [0, 30 + Math.random() * 40] : [Math.random() < 0.5 ? -1 : 1, 15 + Math.random() * 65];
@@ -188,7 +252,10 @@ function soUpdateFlight(dt) {
   } else {
     ball.vz -= GRAVITY * dt;
     ball.x += ball.vx * dt; ball.d += ball.vd * dt; ball.z += ball.vz * dt;
-    if (r === 'goal' && ball.x > FW + GOAL_DEPTH - BR) { ball.x = FW + GOAL_DEPTH - BR; ball.vx *= -0.1; ball.vd *= 0.5; }
+    if (r === 'goal' && ball.x > FW + GOAL_DEPTH - BR - 4) {
+      soNetHit(ball.d, ball.z);
+      if (SO.net && SO.net.hit && SO.net.hit.t < NET_SHATTER) { ball.x = FW + GOAL_DEPTH - BR - 4; ball.vx = 0; ball.vd *= 0.3; ball.vz = Math.min(ball.vz, 0); }
+    }
     if (ball.z < 0) { ball.z = 0; ball.vz = Math.abs(ball.vz) * 0.4; ball.vx *= 0.7; ball.vd *= 0.7; }
   }
 }
@@ -243,6 +310,7 @@ function soUpdate(dt) {
   for (let i = popups.length - 1; i >= 0; i--) if ((popups[i].t -= dt) <= 0) popups.splice(i, 1);
   for (const p of [me, cpu]) { if (p.say) { p.say.t -= dt; if (p.say.t <= 0) p.say = null; } if (p.moodT > 0 && p.moodT < 90) p.moodT -= dt; }
   const v = joyVec(); if (v) SO.lastJoy = v;
+  soUpdateNet(dt);
   switch (SO.stage) {
     case 'intro':                                          // side view first …
       if (SO.t > 1.3) { SO.stage = 'turn'; SO.t = 0; soSetupKickSilently(); }
@@ -413,6 +481,7 @@ function soWorld() {
   const K = soKeeper();
   const items = [{ x: FW + 0.5, f: () => soGoal(true) }, { x: SO_GX, f: () => soDrawKeeper(K) }, { x: ball.x, f: soDrawBall }];
   items.sort((a, b) => b.x - a.x).forEach(it => it.f());
+  soDrawNet(true);
   for (const p of [me, cpu]) if (p.hidden) p.scr = null;
 }
 function soGround(endX) {
@@ -470,18 +539,7 @@ function soLines() {
 function soGoal(front) {
   const d1 = SO_C - GOAL_HALF, d2 = SO_C + GOAL_HALF, bx = FW + GOAL_DEPTH, bh = GOAL_H * 0.8;
   const quad = (pts, fill, stroke) => { ctx.beginPath(); pts.forEach(([x, d, z], i) => { const [sx, sy] = Q(x, d, z); i ? ctx.lineTo(sx, sy) : ctx.moveTo(sx, sy); }); ctx.closePath(); ctx.fillStyle = fill; ctx.fill(); if (stroke) { ctx.strokeStyle = stroke; ctx.stroke(); } };
-  if (!front) {
-    ctx.save(); ctx.lineWidth = 1;
-    quad([[bx, d1, 0], [bx, d2, 0], [bx, d2, bh], [bx, d1, bh]], 'rgba(255,255,255,.14)', 'rgba(255,255,255,.4)');
-    quad([[FW, d1, 0], [bx, d1, 0], [bx, d1, bh], [FW, d1, GOAL_H]], 'rgba(255,255,255,.1)', 'rgba(255,255,255,.35)');
-    quad([[FW, d2, 0], [bx, d2, 0], [bx, d2, bh], [FW, d2, GOAL_H]], 'rgba(255,255,255,.1)', 'rgba(255,255,255,.35)');
-    quad([[FW, d1, GOAL_H], [bx, d1, bh], [bx, d2, bh], [FW, d2, GOAL_H]], 'rgba(255,255,255,.1)', 'rgba(255,255,255,.35)');
-    ctx.strokeStyle = 'rgba(255,255,255,.32)';                 // net mesh on the back
-    for (let i = 1; i < 12; i++) { const dd = d1 + (d2 - d1) * i / 12; const [a1, b1] = Q(bx, dd, 0), [a2, b2] = Q(bx, dd, bh); ctx.beginPath(); ctx.moveTo(a1, b1); ctx.lineTo(a2, b2); ctx.stroke(); }
-    for (let i = 1; i < 6; i++) { const zz = bh * i / 6; const [a1, b1] = Q(bx, d1, zz), [a2, b2] = Q(bx, d2, zz); ctx.beginPath(); ctx.moveTo(a1, b1); ctx.lineTo(a2, b2); ctx.stroke(); }
-    ctx.restore();
-    return;
-  }
+  if (!front) { soDrawNet(false); return; }
   const [x1, yb1, k1] = Q(FW, d1, 0), [, yt] = Q(FW, d1, GOAL_H), [x2] = Q(FW, d2, 0);
   ctx.save(); ctx.lineCap = 'round'; ctx.lineJoin = 'round';
   ctx.strokeStyle = 'rgba(0,0,0,.25)'; ctx.lineWidth = 4.5 * k1 + 3;

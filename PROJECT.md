@@ -1,6 +1,6 @@
 # Kick-About – project documentation
 
-*Last updated: 18 Nov 2026 (session 3, v23: conceding reactions, Mark's coolHat celebration, penalty shoot-out)*
+*Last updated: 18 Nov 2026 (session 3, v24: conceding reactions, Mark's coolHat celebration, penalty shoot-out with shattering net)*
 
 ## 1. What this is
 A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1 football game** set in **our real backyard**, modelled on the matches we play when he visits. It's single-player: **Mark (human) vs. Onkel (CPU = me)**. It runs on a **tablet in landscape** as a **PWA** (installable, fullscreen, offline). The game is in **German** (we speak German together).
@@ -27,10 +27,10 @@ A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1
 | Backyard theme | Generic cartoon art (no real houses or text), so it's OK in the public repo. If `theme/backyard/` is missing, the game falls back to a green stadium. |
 | View | 2.5D perspective side view (like *NHL Open Ice*). The camera sits high behind the near touchline and scrolls. The ground is a top-down texture drawn in perspective strips, **batched per texture piece** (this fixed a 10 fps lag mid-pitch; now up to 120 fps). |
 | Controls | **Right:** joystick (chalk circle; the football is the knob; speed ring). **Left:** one big action button (SCHUSS with the ball / GRÄTSCHE without / ZIELEN… while aiming / WEITER during celebrations) plus SPRINT. **Top:** whiteboard scoreboard and pause. |
-| Caching | `sw.js` is network-first with `fetch(e.request, { cache: 'no-cache' })`, falling back to the cache. **Keep this.** Bump the `CACHE` name when shipping (currently `kickabout-v23`). |
+| Caching | `sw.js` is network-first with `fetch(e.request, { cache: 'no-cache' })`, falling back to the cache. **Keep this.** Bump the `CACHE` name when shipping (currently `kickabout-v24`). |
 | Fonts | Baloo 2 (UI) and Permanent Marker (whiteboard), from Google Fonts. The first start needs internet. |
 
-## 3. Gameplay (v23)
+## 3. Gameplay (v24)
 - **Match:** first to 5 goals. Random first possession; after a goal, the side that conceded kicks off.
 - **Kick-off:** the non-kicker stays outside the centre circle until the kicker moves. Onkel paces impatiently around the circle. A CPU kick-off starts slowly.
 - **Movement:** inertia, stamina (bar above the head, 💦 when tired). Sprint (human only): ×1.5 for 3 s, then a 10 s cooldown; the legs become a cartoon whirl.
@@ -84,6 +84,7 @@ A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1
 - **Front view:** own projection `Q(x, d, z)` (camera 200 behind the penalty spot, height 55; `soF = 1.71·H`, horizon `0.41·H`); ground = the baked gravel texture turned 90° once (`soBuildGround`) and drawn in strips; end wall + backdrop behind the goal, the long wall receding on the left, tree prop; chalk lines; goal with net and cones. The keeper is drawn with `drawPlayer` via a screen override (`p.scr`), scaled `SO_KEEPER_K` = 0.75 so the goal looks big enough; dives rotate the body (`p.rot`). Only the keeper is visible.
 - **Mark kicks:** the arrow goes straight out of the ball (dashed) to an aim ring on the goal plane. Joystick = direction (sticky when released; full deflection can go wide/over). **Hold SCHUSS to charge** (full after `SO_CHARGE_T` = 1.5 s; ring around the button, black/white tick at 1/3), release to shoot. The harder, the jumpier the aim (`SO_SHAKE` = 30 at full power). **Below 1/3 power the keeper always catches it.** Onkel shows his planned dive with a blue arrow + ring (5 zones: left/right low/high, middle) that changes every 0.45–1.15 s until the kick; at the kick he dives there (reach ±44 sideways / ±46 height). Strong shots (> 0.82) in reach are parried 50 %.
 - **Mark keeps:** the left buttons are hidden; the joystick sets direction and length of the dive (red arrow + ring); the CPU's dashed kick arrow wanders (every 0.7–1.4 s) while its power ring around the ball fills; it shoots after 2.4–4.6 s with power 0.5–1.0. Mark dives automatically at the kick (reach ±52 / ±54).
+- **Net (v24):** made of opaque white tiles (back 12×6, sides 3×6, roof 12×2; gaps = mesh). On a goal the ball stops at the back net, the tiles flash **green (Mark scores) or red (Onkel scores)** spreading out from the impact point (`NET_FLASH` 0.22 s), then **shatter like glass** (`NET_SHATTER` 0.3 s: shards fly outwards and up, spin and fade, glass noise) and the ball drops through. The net is rebuilt for the next kick.
 - **Results:** TOOOR!, Gehalten!, Zu schwach – gefangen!, Abgewehrt!, Daneben!/Drüber!, Pfosten!/Latte!; keeper moods and bubbles ("Mist!", "Mann!!!", "Hab ihn!", "Gehalten!"). Scoreboard: names, a circle per kick (green = goal, red ✗ = no goal, red ring = next kick), totals.
 
 ### Onkel specials
