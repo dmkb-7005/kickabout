@@ -1,6 +1,6 @@
 # Kick-About – project documentation
 
-*Last updated: 23 Nov 2026 (v26: backyard theme precached for offline use; session 3: conceding reactions, Mark's coolHat celebration, penalty shoot-out)*
+*Last updated: 23 Nov 2026 (v27: fully offline – backyard theme precached, fonts self-hosted; session 3: conceding reactions, Mark's coolHat celebration, penalty shoot-out)*
 
 ## 1. What this is
 A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1 football game** set in **our real backyard**, modelled on the matches we play when he visits. It's single-player: **Mark (human) vs. Onkel (CPU = me)**. It runs on a **tablet in landscape** as a **PWA** (installable, fullscreen, offline). The game is in **German** (we speak German together).
@@ -17,6 +17,7 @@ A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1
   - `img/`: control icons (SVG) and sunglasses
   - `theme/backyard/`: backdrop, wall, gravel tiles, props
   - `lib/fflate.min.js`: unzip library, MIT licence
+  - `fonts/`: self-hosted Baloo 2 (600/800, OFL) and Permanent Marker (Apache 2.0) from @fontsource, `fonts.css`, licence files
 - **Private, never in the repo:** `kickabout-skins.zip`, the face skin pack, is loaded on the tablet via the start screen.
 
 ## 2. Key decisions
@@ -27,11 +28,12 @@ A birthday present for my nephew Mark, who is turning 8: a lighthearted **1-on-1
 | Backyard theme | Generic cartoon art (no real houses or text), so it's OK in the public repo. If `theme/backyard/` is missing, the game falls back to a green stadium. |
 | View | 2.5D perspective side view (like *NHL Open Ice*). The camera sits high behind the near touchline and scrolls. The ground is a top-down texture drawn in perspective strips, **batched per texture piece** (this fixed a 10 fps lag mid-pitch; now up to 120 fps). |
 | Controls | **Right:** joystick (chalk circle; the football is the knob; speed ring). **Left:** one big action button (SCHUSS with the ball / GRÄTSCHE without / ZIELEN… while aiming / WEITER during celebrations) plus SPRINT. **Top:** whiteboard scoreboard and pause. |
-| Caching | `sw.js` is network-first with `fetch(e.request, { cache: 'no-cache' })`, falling back to the cache. **Keep this.** Bump the `CACHE` name when shipping (currently `kickabout-v26`). **Everything the game needs must be in `ASSETS` (precached)** – each bump deletes the old cache, so anything only cached on the fly is gone after an update. Until v26 the `theme/backyard/` files weren't precached: after an update opened offline, the tablet fell back to the green stadium with the birthday banners (bug seen 23 Nov 2026). Error responses (`!res.ok`) are never cached. |
+| Caching | `sw.js` is network-first with `fetch(e.request, { cache: 'no-cache' })`, falling back to the cache. **Keep this.** Bump the `CACHE` name when shipping (currently `kickabout-v27`). **Everything the game needs must be in `ASSETS` (precached)** – each bump deletes the old cache, so anything only cached on the fly is gone after an update. Until v26 the `theme/backyard/` files weren't precached: after an update opened offline, the tablet fell back to the green stadium with the birthday banners (bug seen 23 Nov 2026). Error responses (`!res.ok`) are never cached. |
 | Theme loading | `loadTheme()` retries with growing pauses (up to 8 tries) and again on the `online` event; the backyard replaces the stadium as soon as it loads. |
-| Fonts | Baloo 2 (UI) and Permanent Marker (whiteboard), from Google Fonts. The first start needs internet. |
+| Fonts | Baloo 2 (UI) and Permanent Marker (whiteboard), **self-hosted in `fonts/` since v27** (Latin subset, covers ä ö ü ß) and precached. Before, they came from Google Fonts and fell back to system fonts offline. |
+| Offline | Since v27 the game makes **no external requests**: after one start with internet, everything (code, theme, fonts, icons) is in the service-worker cache; skins live in IndexedDB, achievements in localStorage. Tested: offline restart → backyard + fonts + match work. |
 
-## 3. Gameplay (v26)
+## 3. Gameplay (v27)
 - **Match:** first to 5 goals. Random first possession; after a goal, the side that conceded kicks off.
 - **Kick-off:** the non-kicker stays outside the centre circle until the kicker moves. Onkel paces impatiently around the circle. A CPU kick-off starts slowly.
 - **Movement:** inertia, stamina (bar above the head, 💦 when tired). Sprint (human only): ×1.5 for 3 s, then a 10 s cooldown; the legs become a cartoon whirl.

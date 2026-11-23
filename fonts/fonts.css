@@ -1,0 +1,14 @@
+/* Self-hosted fonts (from @fontsource), so the game also looks right offline.
+   Baloo 2: SIL Open Font License 1.1 – Permanent Marker: Apache License 2.0 (see the LICENSE files here). */
+@font-face {
+  font-family: 'Baloo 2'; font-style: normal; font-weight: 600; font-display: swap;
+  src: url('baloo-2-latin-600-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Baloo 2'; font-style: normal; font-weight: 800; font-display: swap;
+  src: url('baloo-2-latin-800-normal.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'Permanent Marker'; font-style: normal; font-weight: 400; font-display: swap;
+  src: url('permanent-marker-latin-400-normal.woff2') format('woff2');
+}
