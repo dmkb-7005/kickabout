@@ -1,7 +1,11 @@
 // Network-first while you iterate; falls back to cache when offline.
-const CACHE = 'kickabout-v25';
+// Everything the game needs is precached, so a new version also works offline right after the update.
+const CACHE = 'kickabout-v26';
 const ASSETS = ['./', 'index.html', 'game.js', 'shootout.js', 'manifest.webmanifest', 'lib/fflate.min.js', 'icons/icon-192.png', 'icons/icon-512.png', 'img/sunglasses.png',
-  ...['kick', 'tackle', 'bolt', 'bolt_on', 'nervous', 'skip'].map(n => `img/icon_${n}.svg`)];
+  ...['kick', 'tackle', 'bolt', 'bolt_on', 'nervous', 'skip'].map(n => `img/icon_${n}.svg`),
+  // the backyard theme (before v26 it was only cached on the fly, and every update wiped it)
+  ...['backdrop.jpg', 'wall.jpg', 'gravel_grey.jpg', 'gravel_brown.jpg',
+      'prop_palm.png', 'prop_bush.png', 'prop_tree.png', 'prop_house.png', 'prop_car.png'].map(f => `theme/backyard/${f}`)];
 
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)));
@@ -16,7 +20,10 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET') return;
   e.respondWith(
     fetch(e.request, { cache: 'no-cache' })
-      .then(res => { const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return res; })
+      .then(res => {
+        if (!res.ok) return caches.match(e.request, { ignoreSearch: true }).then(hit => hit || res);   // never cache an error page
+        const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return res;
+      })
       .catch(() => caches.match(e.request, { ignoreSearch: true }))
   );
 });

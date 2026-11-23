@@ -1425,18 +1425,31 @@ const PROPS = [                                                // [image, x, d, 
   ['car', -300, 40, 165], ['bush', 790, -27, 72], ['bush', 905, -30, 56], ['tree', FW + 150, -22, 240],
   ['palm', -175, 105, 88], ['house', -330, 112, 300],
 ];                                                             // keep sorted far → near (drawn in this order)
-(function loadTheme() {
+// If a file can't be loaded (e.g. offline before the theme was cached), keep retrying in the
+// background and when the tablet comes back online – the backyard then replaces the stadium.
+let themeTry = 0, themeLoading = false;
+function loadTheme() {
+  if (themeReady || themeLoading) return;
+  themeLoading = true; themeTry++;
   const req = { backdrop: 'backdrop.jpg', wall: 'wall.jpg', grey: 'gravel_grey.jpg', brown: 'gravel_brown.jpg' };
   const opt = { palm: 'prop_palm.png', bush: 'prop_bush.png', tree: 'prop_tree.png', house: 'prop_house.png', car: 'prop_car.png' };
+  const bust = themeTry > 1 ? `?r=${themeTry}` : '';
   let left = Object.keys(req).length, failed = false;
+  const fail = () => {
+    if (failed) return; failed = true; themeLoading = false;
+    if (themeTry < 8) setTimeout(loadTheme, Math.min(30000, 3000 * themeTry));
+  };
   for (const [k, f] of Object.entries(req)) {
+    if (TH[k]) { if (--left === 0) { themeLoading = false; buildTheme(); } continue; }
     const im = new Image();
-    im.onload = () => { TH[k] = im; if (--left === 0 && !failed) buildTheme(); };
-    im.onerror = () => { failed = true; };
-    im.src = THEME_DIR + f;
+    im.onload = () => { TH[k] = im; if (--left === 0 && !failed) { themeLoading = false; buildTheme(); } };
+    im.onerror = fail;
+    im.src = THEME_DIR + f + bust;
   }
-  for (const [k, f] of Object.entries(opt)) { const im = new Image(); im.onload = () => { TH[k] = im; }; im.src = THEME_DIR + f; }
-})();
+  for (const [k, f] of Object.entries(opt)) { if (TH[k]) continue; const im = new Image(); im.onload = () => { TH[k] = im; }; im.src = THEME_DIR + f + bust; }
+}
+loadTheme();
+window.addEventListener('online', () => { themeTry = Math.min(themeTry, 6); loadTheme(); });
 
 // Where the dark grey gravel lies (the rest is the finer brown gravel), roughly like the real yard.
 function greyArea(g) {
