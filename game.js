@@ -52,7 +52,7 @@ const D0 = 520;        // distance from camera to near touchline
 const VIEW_W = 640;    // roughly how much pitch length is visible at mid-depth
 
 // Version shown on the start screen and the Erfolge board – bump together with CACHE in sw.js.
-const APP_VERSION = 'v28', APP_DATE = '23.11.2026';
+const APP_VERSION = 'v29', APP_DATE = '23.11.2026';
 const cv = document.getElementById('c');
 let ctx = cv.getContext('2d');           // (let: the shoot-out renders views off-screen for its camera turn)
 let hudOff = false;                      // shoot-out intro: draw the side view without HUD
