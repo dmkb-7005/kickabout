@@ -51,6 +51,8 @@ const WALK_FRAC = 0.45;                // below this fraction of top speed you d
 const D0 = 520;        // distance from camera to near touchline
 const VIEW_W = 640;    // roughly how much pitch length is visible at mid-depth
 
+// Version shown on the start screen and the Erfolge board – bump together with CACHE in sw.js.
+const APP_VERSION = 'v28', APP_DATE = '23.11.2026';
 const cv = document.getElementById('c');
 let ctx = cv.getContext('2d');           // (let: the shoot-out renders views off-screen for its camera turn)
 let hudOff = false;                      // shoot-out intro: draw the side view without HUD
@@ -273,7 +275,7 @@ const ACHS = [
   { id: 'hattrick',  icon: '🎩', name: 'Hattrick',             desc: 'Drei Tore hintereinander ohne Gegentor' },
   { id: 'keeper',    icon: '🧤', name: 'Super-Torwart',        desc: '10 Bälle gefangen oder gehalten', prog: s => [Math.min(s.saves, 10), 10] },
   { id: 'tackles',   icon: '🦵', name: 'Grätschen-Profi',      desc: '10 Bälle mit Grätschen erobert', prog: s => [Math.min(s.tackles, 10), 10] },
-  { id: 'penalty',   icon: '🥅', name: 'Elfmeterschießen',     desc: '5 Siege insgesamt – schaltet den Elfmeter-Modus frei', prog: s => [Math.min(s.wins, 5), 5] },
+  { id: 'penalty',   icon: '🥅', name: 'Elfmeterschießen',     desc: '5 Siege insgesamt – Elfmeter frei', prog: s => [Math.min(s.wins, 5), 5] },
   { id: 'secret',    icon: '🚗', name: 'Scherben bringen Glück', desc: 'Onkel hat sein eigenes Auto getroffen', secret: true },
 ];
 const freshAch = () => ({ unlocked: {}, stats: { wins: 0, streak: 0, bestStreak: 0, bestDist: 0, celebs: [], cleanSheets: 0, saves: 0, tackles: 0 } });
@@ -372,6 +374,8 @@ function drawBoard() {
   });
   ctx.textAlign = 'left'; ctx.fillStyle = '#1f4fd1'; ctx.font = `20px ${MARKER_FONT}`;
   ctx.fillText(boardOpen === 'pause' ? 'Tippen zum Weiterspielen' : 'Tippen für ein neues Spiel', r.x + 32, r.y + r.h - 38);
+  ctx.fillStyle = '#8a97b0'; ctx.font = `600 13px ${UI_FONT}`;
+  ctx.fillText(`Version ${APP_VERSION} · ${APP_DATE}`, r.x + 32, r.y + r.h - 14);
   const rr = resetRect();
   ctx.strokeStyle = '#c0392b'; ctx.lineWidth = 2; ctx.fillStyle = '#fff';
   ctx.beginPath(); ctx.roundRect(rr.x, rr.y, rr.w, rr.h, 8); ctx.fill(); ctx.stroke();
@@ -477,6 +481,7 @@ function updatePenBtn() {
   b.textContent = ok ? '🥅 Elfmeterschießen' : `🔒 Elfmeterschießen (${Math.min(ACH.stats.wins, PEN_UNLOCK_WINS)}/${PEN_UNLOCK_WINS} Siege)`;
 }
 updatePenBtn();
+document.getElementById('ver').textContent = `Version ${APP_VERSION} · ${APP_DATE}`;
 document.getElementById('pen').addEventListener('click', async () => {
   if (!penaltyUnlocked()) {
     const b = document.getElementById('pen');

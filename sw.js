@@ -1,6 +1,6 @@
 // Network-first while you iterate; falls back to cache when offline.
 // Everything the game needs is precached, so a new version also works offline right after the update.
-const CACHE = 'kickabout-v27';
+const CACHE = 'kickabout-v28';                // keep in sync with APP_VERSION in game.js
 const ASSETS = ['./', 'index.html', 'game.js', 'shootout.js', 'manifest.webmanifest', 'lib/fflate.min.js', 'icons/icon-192.png', 'icons/icon-512.png', 'img/sunglasses.png',
   ...['kick', 'tackle', 'bolt', 'bolt_on', 'nervous', 'skip'].map(n => `img/icon_${n}.svg`),
   // self-hosted fonts (v27; before, they came from Google Fonts and needed internet)
